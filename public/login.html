@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Secure Login</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="login-box">
+    <h2>Secure Access</h2>
+    <input id="uid" placeholder="Username">
+    <input id="upass" type="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+  </div>
+
+<script>
+function login() {
+  if (uid.value === "ritik@#lodhi882" && upass.value === "ritik@#lodhi882") {
+    location.href = "/launcher.html";
+  } else {
+    alert("Invalid Login ❌");
+  }
+}
+</script>
+</body>
+</html>
