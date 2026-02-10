@@ -14,13 +14,13 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* SAME SPEED (UNCHANGED) */
+/* SAME SPEED SETTINGS */
 const HOURLY_LIMIT = 28;   // per Gmail ID
 const PARALLEL = 3;        // same speed
 const DELAY_MS = 120;      // same speed
 
 /* Reputation-safe controls */
-let stats = {};            // per gmail hourly count
+let stats = {};            // hourly count per Gmail
 let failStreak = {};       // consecutive failures
 
 setInterval(() => {
@@ -28,7 +28,7 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers: validation + simple cleanup (no word-hiding) */
+/* Helpers: validation + light cleanup (no spam tricks) */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
 const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
@@ -47,17 +47,17 @@ async function sendSafely(transporter, mails, gmail) {
     results.forEach(r => {
       if (r.status === "fulfilled") {
         sent++;
-        failStreak[gmail] = 0; // reset on success
+        failStreak[gmail] = 0;
       } else {
         console.log("Send fail:", r.reason?.message);
         failStreak[gmail] = (failStreak[gmail] || 0) + 1;
       }
     });
 
-    // Small pause between batches (same speed)
+    // same delay between batches
     await new Promise(r => setTimeout(r, DELAY_MS));
 
-    // Stop early if too many consecutive failures (protect account)
+    // stop early if too many consecutive failures (protect reputation)
     if ((failStreak[gmail] || 0) >= 5) {
       console.log("Stopping early due to repeated failures");
       break;
@@ -113,7 +113,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  /* One message per recipient (better reputation than big TO list) */
+  /* One message per recipient */
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
@@ -129,5 +129,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Extra-Safe Mail Server running");
+  console.log("Safe & Compliant Mail Server running");
 });
