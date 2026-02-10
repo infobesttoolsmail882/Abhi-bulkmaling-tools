@@ -1,9 +1,11 @@
-  {
+{
   "name": "safe-mail-sender",
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
     "express": "^4.19.2",
-    "nodemailer": "^6.9.9"
+    "nodemailer": "^6.9.9",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.3.0"
   }
 }
