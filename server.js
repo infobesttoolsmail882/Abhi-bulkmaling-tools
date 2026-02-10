@@ -15,12 +15,12 @@ app.get("/", (req, res) => {
 });
 
 /* SAME SPEED */
-const HOURLY_LIMIT = 28;
-const PARALLEL = 3;
-const BASE_DELAY_MS = 120;
+const HOURLY_LIMIT = 28;     // per Gmail ID
+const PARALLEL = 3;          // same speed
+const BASE_DELAY_MS = 120;   // same speed range
 
-let stats = {};
-let failStreak = {};
+let stats = {};              // hourly counter per gmail
+let failStreak = {};         // consecutive failures
 
 setInterval(() => {
   stats = {};
@@ -31,11 +31,19 @@ setInterval(() => {
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function cleanSubject(s = "") {
-  return s.replace(/\s+/g, " ").replace(/([!?])\1+/g, "$1").trim().slice(0, 150);
+  return s
+    .replace(/\s+/g, " ")
+    .replace(/([!?])\1+/g, "$1")
+    .trim()
+    .slice(0, 150);
 }
 
 function cleanText(t = "") {
-  return t.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 5000);
+  return t
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 5000);
 }
 
 function delayWithJitter(base) {
@@ -65,7 +73,8 @@ async function sendSafely(transporter, mails, gmail) {
 
     await delayWithJitter(BASE_DELAY_MS);
 
-    if ((failStreak[gmail] || 0) >= 5) break; // protect account
+    // Protect account if many consecutive failures
+    if ((failStreak[gmail] || 0) >= 5) break;
   }
 
   return sent;
@@ -82,6 +91,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Invalid Gmail" });
   }
 
+  // Prepare recipients: valid + unique
   let recipients = to
     .split(/,|\n/)
     .map(r => r.trim())
@@ -103,6 +113,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Limit full" });
   }
 
+  // Standard Gmail SMTP
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -114,6 +125,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
+  // One message per recipient
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
