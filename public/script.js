@@ -7,9 +7,11 @@ const logoutBtn = document.getElementById("logoutBtn");
 
 sendBtn.onclick = () => { if (!sending) sendMail(); };
 
-logoutBtn.onclick = () => {
-  sessionStorage.clear();
-  location.href = "/login.html";
+logoutBtn.ondblclick = () => {
+  if (!sending) {
+    sessionStorage.clear();
+    location.href = "/login.html";
+  }
 };
 
 async function sendMail() {
@@ -34,14 +36,14 @@ async function sendMail() {
     const data = await res.json();
 
     if (!data.success) {
-      alert(data.msg || "Failed");
+      alert(data.msg || "Sending failed ❌");
       return;
     }
 
-    alert(`Emails Sent: ${data.sent}`);
+    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
 
   } catch {
-    alert("Server error");
+    alert("Server error ❌");
   } finally {
     sending = false;
     sendBtn.disabled = false;
