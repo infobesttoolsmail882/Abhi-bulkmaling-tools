@@ -16,17 +16,17 @@
 </div>
 
 <script>
-document.getElementById("loginBtn").addEventListener("click", function () {
+document.getElementById("loginBtn").onclick = function () {
   const u = document.getElementById("uid").value.trim();
   const p = document.getElementById("upass").value.trim();
 
   if (u === "@#2026" && p === "@#2026") {
-    sessionStorage.setItem("auth", "ok");
+    sessionStorage.setItem("auth","ok");
     window.location.href = "/launcher.html";
   } else {
     alert("Invalid Login");
   }
-});
+};
 </script>
 
 </body>
