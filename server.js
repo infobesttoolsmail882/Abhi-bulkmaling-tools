@@ -2,72 +2,43 @@ import express from "express";
 import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+/* Basic server hardening */
+app.use(helmet());
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/* ===== ROOT (SAFE FOR RENDER) ===== */
+/* Light API rate limit (abuse se bachav) */
+app.use("/send", rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30
+}));
+
 app.get("/", (req, res) => {
-  const p = path.join(__dirname, "public", "login.html");
-  res.sendFile(p, err => {
-    if (err) res.status(404).send("login.html not found");
-  });
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ===== SPEED CONFIG (UNCHANGED) ===== */
-const HOURLY_LIMIT = 28;      // per Gmail ID
-const PARALLEL = 3;          // SAME SPEED
-const DELAY_MS = 120;        // SAME SPEED
+/* SAME SPEED (UNCHANGED) */
+const HOURLY_LIMIT = 28;
+const PARALLEL = 3;
+const DELAY_MS = 120;
 
-/* Gmail-wise stats */
 let stats = {};
+setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
-/* 🔁 AUTO RESET EVERY 1 HOUR */
-setInterval(() => {
-  stats = {};
-  console.log("🧹 Hourly reset → Gmail limits cleared");
-}, 60 * 60 * 1000);
+/* Helpers: validation + simple cleanup */
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
+const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
 
-/* ===== ULTRA SAFE CONTENT LAYER ===== */
-
-/* Subject: clean, human-like */
-function safeSubject(subject) {
-  return subject
-    .replace(/\s{2,}/g, " ")
-    .replace(/([!?])\1+/g, "$1")
-    .replace(/^[A-Z\s]+$/, s => s.toLowerCase())
-    .replace(/free|urgent|act now|guarantee/gi, "")
-    .trim();
-}
-
-/* Body: plain text, paragraph based */
-function safeBody(text) {
-  let t = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  const soften = [
-    ["report", "the report details are shared below"],
-    ["price", "the pricing details are included below"],
-    ["quote", "the quoted details are mentioned below"],
-    ["proposal", "the proposal details are outlined below"],
-    ["screenshot", "a screenshot has been included for reference"]
-  ];
-
-  soften.forEach(([word, line]) => {
-    const re = new RegExp(`(^|\\n)\\s*${word}\\s*(?=\\n|$)`, "gi");
-    t = t.replace(re, `$1${line}`);
-  });
-
-  return t;
-}
-
-/* ===== SAFE SEND (RATE CONTROLLED) ===== */
+/* Controlled parallel sender */
 async function sendSafely(transporter, mails) {
   let sent = 0;
 
@@ -80,6 +51,7 @@ async function sendSafely(transporter, mails) {
 
     results.forEach(r => {
       if (r.status === "fulfilled") sent++;
+      else console.log("Send fail:", r.reason?.message);
     });
 
     await new Promise(r => setTimeout(r, DELAY_MS));
@@ -88,79 +60,66 @@ async function sendSafely(transporter, mails) {
   return sent;
 }
 
-/* ===== SEND API ===== */
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
   if (!gmail || !apppass || !to || !subject || !message) {
-    return res.json({ success: false, msg: "Missing Fields ❌", count: 0 });
+    return res.json({ success: false, msg: "Missing fields ❌" });
   }
 
-  /* INIT PER GMAIL LIMIT */
-  if (!stats[gmail]) stats[gmail] = { count: 0 };
-
-  if (stats[gmail].count >= HOURLY_LIMIT) {
-    return res.json({
-      success: false,
-      msg: "This Gmail ID hourly limit reached ❌",
-      count: stats[gmail].count
-    });
+  if (!emailRegex.test(gmail)) {
+    return res.json({ success: false, msg: "Invalid Gmail ❌" });
   }
 
-  const recipients = to
-    .split(/,|\r?\n/)
+  /* Prepare recipients: valid + unique */
+  let recipients = to.split(/,|\n/)
     .map(r => r.trim())
-    .filter(r => r.includes("@"));
+    .filter(r => emailRegex.test(r));
+
+  recipients = [...new Set(recipients)];
+
+  if (recipients.length === 0) {
+    return res.json({ success: false, msg: "No valid recipients ❌" });
+  }
+
+  if (!stats[gmail]) stats[gmail] = { count: 0 };
+  if (stats[gmail].count >= HOURLY_LIMIT) {
+    return res.json({ success: false, msg: "Hourly limit reached ❌" });
+  }
 
   const remaining = HOURLY_LIMIT - stats[gmail].count;
   if (recipients.length > remaining) {
-    return res.json({
-      success: false,
-      msg: "This Gmail ID limit full ❌",
-      count: stats[gmail].count
-    });
+    return res.json({ success: false, msg: "Limit full for this Gmail ❌" });
   }
 
-  const finalSubject = safeSubject(subject);
-  const finalText = safeBody(message) + "\n\nScanned & secured";
-
+  /* Standard Gmail SMTP (trusted) */
   const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
+    service: "gmail",
     auth: { user: gmail, pass: apppass }
   });
 
   try {
     await transporter.verify();
-  } catch {
-    return res.json({
-      success: false,
-      msg: "Wrong App Password ❌",
-      count: stats[gmail].count
-    });
+  } catch (err) {
+    console.log("SMTP ERROR:", err.message);
+    return res.json({ success: false, msg: "Gmail login failed ❌" });
   }
 
+  /* One message per recipient */
   const mails = recipients.map(r => ({
-    from: `"${senderName}" <${gmail}>`,
+    from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: finalSubject,
-    text: finalText,
+    subject: cleanSubject(subject),
+    text: cleanText(message),
     replyTo: gmail
   }));
 
   const sent = await sendSafely(transporter, mails);
   stats[gmail].count += sent;
 
-  return res.json({
-    success: true,
-    sent,
-    count: stats[gmail].count
-  });
+  res.json({ success: true, sent });
 });
 
-/* ===== START SERVER ===== */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("✅ SAFE Mail Server running on port", PORT);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("✅ Safe Mail Server running");
 });
