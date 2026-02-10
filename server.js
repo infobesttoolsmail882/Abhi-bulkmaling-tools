@@ -17,24 +17,29 @@ app.get("/", (req, res) => {
 /* SAME SPEED */
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
-const BASE_DELAY = 120;
+const BASE_DELAY_MS = 120;
 
 let stats = {};
-let failCount = {};
+let failStreak = {};
 
 setInterval(() => {
   stats = {};
-  failCount = {};
+  failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Validation helpers */
+/* Helpers */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const clean = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 4000);
+const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
+const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
 
-/* Small natural delay (same speed range) */
-function wait() {
-  const jitter = Math.floor(Math.random() * 40) - 20;
-  return new Promise(r => setTimeout(r, BASE_DELAY + jitter));
+/* Neutral safety footer (2 lines gap) */
+function withSafeFooter(text) {
+  return `${text}\n\nThis message was sent securely.\nIf this reached you by mistake, you may ignore it.`;
+}
+
+function delayWithJitter(base) {
+  const jitter = Math.floor(Math.random() * 41) - 20;
+  return new Promise(r => setTimeout(r, base + jitter));
 }
 
 async function sendSafely(transporter, mails, gmail) {
@@ -50,17 +55,16 @@ async function sendSafely(transporter, mails, gmail) {
     results.forEach(r => {
       if (r.status === "fulfilled") {
         sent++;
-        failCount[gmail] = 0;
+        failStreak[gmail] = 0;
       } else {
-        failCount[gmail] = (failCount[gmail] || 0) + 1;
+        failStreak[gmail] = (failStreak[gmail] || 0) + 1;
         console.log("Send fail:", r.reason?.message);
       }
     });
 
-    await wait();
+    await delayWithJitter(BASE_DELAY_MS);
 
-    /* Stop if many consecutive failures (protect reputation) */
-    if ((failCount[gmail] || 0) >= 5) break;
+    if ((failStreak[gmail] || 0) >= 5) break;
   }
 
   return sent;
@@ -75,7 +79,8 @@ app.post("/send", async (req, res) => {
   if (!emailRegex.test(gmail))
     return res.json({ success: false, msg: "Invalid Gmail" });
 
-  let recipients = to.split(/,|\n/)
+  let recipients = to
+    .split(/,|\n/)
     .map(r => r.trim())
     .filter(r => emailRegex.test(r));
 
@@ -85,13 +90,12 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "No valid recipients" });
 
   if (!stats[gmail]) stats[gmail] = { count: 0 };
-
   if (stats[gmail].count >= HOURLY_LIMIT)
     return res.json({ success: false, msg: "Hourly limit reached" });
 
   const remaining = HOURLY_LIMIT - stats[gmail].count;
   if (recipients.length > remaining)
-    return res.json({ success: false, msg: "Limit full" });
+    return res.json({ success: false, msg: "Limit full for this Gmail" });
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -104,11 +108,13 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
+  const finalText = withSafeFooter(cleanText(message));
+
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: clean(subject).slice(0,150),
-    text: clean(message),
+    subject: cleanSubject(subject),
+    text: finalText,
     replyTo: gmail
   }));
 
@@ -119,5 +125,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Real Safe Mail Server running");
+  console.log("Safe Mail Server with Neutral Footer running");
 });
