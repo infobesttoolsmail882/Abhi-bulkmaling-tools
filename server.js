@@ -14,24 +14,30 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* SAME SPEED SETTINGS */
-const HOURLY_LIMIT = 28;   // per Gmail ID
-const PARALLEL = 3;        // same speed
-const DELAY_MS = 120;      // same speed
+/* SAME SPEED (BASE) */
+const HOURLY_LIMIT = 28;
+const PARALLEL = 3;
+const BASE_DELAY_MS = 120; // base same speed
 
-/* Reputation-safe controls */
-let stats = {};            // hourly count per Gmail
-let failStreak = {};       // consecutive failures
+/* Reputation-safe state */
+let stats = {};
+let failStreak = {};
 
 setInterval(() => {
   stats = {};
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers: validation + light cleanup (no spam tricks) */
+/* Helpers (no spam tricks) */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
 const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
+
+/* Small natural jitter around same speed (±20ms) */
+function delayWithJitter(base) {
+  const jitter = Math.floor(Math.random() * 41) - 20; // -20..+20
+  return new Promise(r => setTimeout(r, base + jitter));
+}
 
 /* Controlled parallel sender */
 async function sendSafely(transporter, mails, gmail) {
@@ -54,10 +60,10 @@ async function sendSafely(transporter, mails, gmail) {
       }
     });
 
-    // same delay between batches
-    await new Promise(r => setTimeout(r, DELAY_MS));
+    // keep same speed range
+    await delayWithJitter(BASE_DELAY_MS);
 
-    // stop early if too many consecutive failures (protect reputation)
+    // protect account if many consecutive failures
     if ((failStreak[gmail] || 0) >= 5) {
       console.log("Stopping early due to repeated failures");
       break;
@@ -100,7 +106,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Limit full for this Gmail" });
   }
 
-  /* Standard Gmail SMTP (trusted config) */
+  /* Standard Gmail SMTP */
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -129,5 +135,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Safe & Compliant Mail Server running");
+  console.log("Most Safe-Practice Mail Server running");
 });
