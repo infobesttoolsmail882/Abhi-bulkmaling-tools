@@ -7,11 +7,9 @@ const logoutBtn = document.getElementById("logoutBtn");
 
 sendBtn.onclick = () => { if (!sending) sendMail(); };
 
-logoutBtn.ondblclick = () => {
-  if (!sending) {
-    sessionStorage.clear();
-    location.href = "/login.html";
-  }
+logoutBtn.onclick = () => {
+  sessionStorage.clear();
+  location.href = "/login.html";
 };
 
 async function sendMail() {
