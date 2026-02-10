@@ -1,33 +1,39 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
   <title>Secure Login</title>
-  <link rel="stylesheet" href="style.css">
+  <style>
+    body{margin:0;background:#eef3fb;font-family:Arial}
+    .box{width:360px;margin:120px auto;background:#fff;padding:30px;border-radius:16px;text-align:center}
+    input{width:100%;padding:12px;margin-bottom:12px;border-radius:10px;border:1px solid #ccc}
+    button{width:100%;padding:14px;border-radius:12px;border:none;background:#3b82f6;color:#fff;font-size:16px}
+  </style>
 </head>
 <body>
-  <div class="login-box">
-    <h2>Secure Access</h2>
 
-    <input id="uid" placeholder="Username">
-    <input id="upass" type="password" placeholder="Password">
+<div class="box">
+  <h2>Secure Access</h2>
 
-    <button id="loginBtn">Login</button>
-  </div>
+  <input id="uid" placeholder="Username">
+  <input id="upass" type="password" placeholder="Password">
+
+  <button onclick="doLogin()">Login</button>
+</div>
 
 <script>
-document.getElementById("loginBtn").addEventListener("click", function () {
+function doLogin(){
+  var u = document.getElementById("uid").value.trim();
+  var p = document.getElementById("upass").value.trim();
 
-  const u = document.getElementById("uid").value.trim();
-  const p = document.getElementById("upass").value.trim();
-
-  if (u === "@#2026" && p === "@#2026") {
-    sessionStorage.setItem("auth", "ok");
+  if(u === "@#2026" && p === "@#2026"){
+    sessionStorage.setItem("auth","ok");
     window.location.href = "/launcher.html";
-  } else {
-    alert("Invalid Login ❌");
+  }else{
+    alert("Invalid Login");
   }
-
-});
+}
 </script>
+
 </body>
 </html>
