@@ -27,24 +27,15 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers: validation + natural formatting (no tricks) */
+/* Helpers */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function normalizeSubject(s = "") {
-  return s
-    .replace(/\s+/g, " ")
-    .replace(/([!?])\1+/g, "$1") // remove !!! or ???
-    .trim()
-    .slice(0, 150);
+function cleanSubject(s = "") {
+  return s.replace(/\s+/g, " ").replace(/([!?])\1+/g, "$1").trim().slice(0, 150);
 }
 
-function normalizeText(t = "") {
-  let text = t.replace(/\r\n/g, "\n").trim();
-
-  // limit length and excessive blank lines
-  text = text.replace(/\n{3,}/g, "\n\n").slice(0, 5000);
-
-  return text;
+function cleanText(t = "") {
+  return t.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 5000);
 }
 
 function delayWithJitter(base) {
@@ -74,7 +65,7 @@ async function sendSafely(transporter, mails, gmail) {
 
     await delayWithJitter(BASE_DELAY_MS);
 
-    if ((failStreak[gmail] || 0) >= 5) break; // protect reputation
+    if ((failStreak[gmail] || 0) >= 5) break; // protect account
   }
 
   return sent;
@@ -109,7 +100,7 @@ app.post("/send", async (req, res) => {
 
   const remaining = HOURLY_LIMIT - stats[gmail].count;
   if (recipients.length > remaining) {
-    return res.json({ success: false, msg: "Limit full for this Gmail" });
+    return res.json({ success: false, msg: "Limit full" });
   }
 
   const transporter = nodemailer.createTransport({
@@ -126,8 +117,8 @@ app.post("/send", async (req, res) => {
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: normalizeSubject(subject),
-    text: normalizeText(message),
+    subject: cleanSubject(subject),
+    text: cleanText(message),
     replyTo: gmail
   }));
 
@@ -138,5 +129,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Safe & Natural Mail Server running");
+  console.log("Safe Mail Server running");
 });
