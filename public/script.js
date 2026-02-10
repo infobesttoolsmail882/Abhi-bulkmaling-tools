@@ -34,14 +34,14 @@ async function sendMail() {
     const data = await res.json();
 
     if (!data.success) {
-      alert(data.msg || "Sending failed ❌");
+      alert(data.msg || "Failed");
       return;
     }
 
-    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
+    alert(`Emails Sent: ${data.sent}`);
 
   } catch {
-    alert("Server error ❌");
+    alert("Server error");
   } finally {
     sending = false;
     sendBtn.disabled = false;
