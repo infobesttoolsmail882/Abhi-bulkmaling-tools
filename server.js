@@ -19,16 +19,16 @@ const HOURLY_LIMIT = 28;   // per Gmail ID
 const PARALLEL = 3;        // same speed
 const DELAY_MS = 120;      // same speed
 
-/* Basic reputation-safe controls */
+/* Reputation-safe controls */
 let stats = {};            // per gmail hourly count
-let failStreak = {};       // track consecutive failures
+let failStreak = {};       // consecutive failures
 
 setInterval(() => {
   stats = {};
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers: validate & clean (no spam tricks) */
+/* Helpers: validation + simple cleanup (no word-hiding) */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
 const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
@@ -54,10 +54,10 @@ async function sendSafely(transporter, mails, gmail) {
       }
     });
 
-    /* Small pause between batches (same speed setting) */
+    // Small pause between batches (same speed)
     await new Promise(r => setTimeout(r, DELAY_MS));
 
-    /* If many consecutive failures, stop early to protect account */
+    // Stop early if too many consecutive failures (protect account)
     if ((failStreak[gmail] || 0) >= 5) {
       console.log("Stopping early due to repeated failures");
       break;
@@ -113,7 +113,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  /* One message per recipient */
+  /* One message per recipient (better reputation than big TO list) */
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
