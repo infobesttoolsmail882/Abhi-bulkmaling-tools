@@ -14,7 +14,8 @@
 
 <script>
 function login() {
-  if (uid.value === "ritik@#lodhi882" && upass.value === "ritik@#lodhi882") {
+  if (uid.value.trim() === "@#2026" && upass.value.trim() === "@#2026") {
+    sessionStorage.setItem("auth","ok");
     location.href = "/launcher.html";
   } else {
     alert("Invalid Login ❌");
