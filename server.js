@@ -2,27 +2,19 @@ import express from "express";
 import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
-app.use(helmet());
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
-
-app.use("/send", rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30
-}));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
+/* SAME SPEED SETTINGS */
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
 const DELAY_MS = 120;
