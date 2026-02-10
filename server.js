@@ -14,10 +14,10 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* SAME SPEED SETTINGS */
-const HOURLY_LIMIT = 28;   // per Gmail ID
-const PARALLEL = 3;        // same speed
-const BASE_DELAY_MS = 120; // same speed range
+/* SAME SPEED */
+const HOURLY_LIMIT = 28;
+const PARALLEL = 3;
+const BASE_DELAY_MS = 120;
 
 let stats = {};
 let failStreak = {};
@@ -27,10 +27,25 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers: validation + light cleanup (no spam tricks) */
+/* Helpers: validation + natural formatting (no tricks) */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const cleanSubject = s => (s || "").replace(/\s+/g, " ").trim().slice(0, 150);
-const cleanText = t => (t || "").replace(/\r\n/g, "\n").trim().slice(0, 5000);
+
+function normalizeSubject(s = "") {
+  return s
+    .replace(/\s+/g, " ")
+    .replace(/([!?])\1+/g, "$1") // remove !!! or ???
+    .trim()
+    .slice(0, 150);
+}
+
+function normalizeText(t = "") {
+  let text = t.replace(/\r\n/g, "\n").trim();
+
+  // limit length and excessive blank lines
+  text = text.replace(/\n{3,}/g, "\n\n").slice(0, 5000);
+
+  return text;
+}
 
 function delayWithJitter(base) {
   const jitter = Math.floor(Math.random() * 41) - 20; // -20..+20 ms
@@ -59,8 +74,7 @@ async function sendSafely(transporter, mails, gmail) {
 
     await delayWithJitter(BASE_DELAY_MS);
 
-    // Protect reputation if many consecutive failures
-    if ((failStreak[gmail] || 0) >= 5) break;
+    if ((failStreak[gmail] || 0) >= 5) break; // protect reputation
   }
 
   return sent;
@@ -77,7 +91,6 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Invalid Gmail" });
   }
 
-  /* Prepare recipients: valid + unique */
   let recipients = to
     .split(/,|\n/)
     .map(r => r.trim())
@@ -99,7 +112,6 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Limit full for this Gmail" });
   }
 
-  /* Standard Gmail SMTP (trusted config) */
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -107,17 +119,15 @@ app.post("/send", async (req, res) => {
 
   try {
     await transporter.verify();
-  } catch (err) {
-    console.log("SMTP ERROR:", err.message);
+  } catch {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  /* Send exactly the user's message (no footer added) */
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: cleanSubject(subject),
-    text: cleanText(message),
+    subject: normalizeSubject(subject),
+    text: normalizeText(message),
     replyTo: gmail
   }));
 
@@ -128,5 +138,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Safe Mail Server running (no footer)");
+  console.log("Safe & Natural Mail Server running");
 });
