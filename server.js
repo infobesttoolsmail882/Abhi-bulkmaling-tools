@@ -14,12 +14,11 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ===== SAME SPEED ===== */
-const HOURLY_LIMIT = 28;
-const PARALLEL = 3;
-const BASE_DELAY_MS = 120;
+/* ===== SAME SPEED CONFIG ===== */
+const HOURLY_LIMIT = 28;      // per Gmail
+const PARALLEL = 3;           // SAME SPEED
+const BASE_DELAY_MS = 120;    // SAME SPEED
 
-/* ===== STATE ===== */
 let stats = {};
 let failStreak = {};
 
@@ -28,48 +27,39 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* ===== VALIDATION ===== */
+/* ===== HELPERS (SAFE NORMALIZATION ONLY) ===== */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/* ===== SAFE AUTO-REWRITE (NO HIDING) =====
-   Converts pushy/scary wording to neutral business English */
-const SAFE_REWRITE = [
-  [/hello\b/gi, "Hi"],
-  [/error|glitch|bug\b/gi, "something that may need attention"],
-  [/stops? it from showing|not showing\b/gi, "may affect how it appears"],
-  [/search platforms?|google\b/gi, "online"],
-  [/screen ?shot|image\b/gi, "details"],
-  [/can i.*email\?/gi, "Would you like me to share the details by email?"],
-];
-
-function rewriteToNeutral(text = "") {
-  let t = text.replace(/\r\n/g, "\n").trim();
-  SAFE_REWRITE.forEach(([re, rep]) => { t = t.replace(re, rep); });
-  // normalize spacing
-  t = t.replace(/\n{3,}/g, "\n\n");
-  return t.slice(0, 5000);
+function normalizeSubject(s = "") {
+  return s
+    .replace(/\s+/g, " ")          // extra spaces
+    .replace(/([!?])\1+/g, "$1")   // !!! ???
+    .trim()
+    .slice(0, 150);
 }
 
-/* ===== CLEAN SUBJECT/BODY ===== */
-function cleanSubject(s = "") {
-  return s.replace(/\s+/g, " ").replace(/([!?])\1+/g, "$1").trim().slice(0, 120);
-}
-function cleanText(t = "") {
-  return t.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 5000);
-}
-
-/* ===== NATURAL DELAY (SAME SPEED RANGE) ===== */
-function delayWithJitter(base) {
-  const jitter = Math.floor(Math.random() * 41) - 20; // -20..+20ms
-  return new Promise(r => setTimeout(r, base + jitter));
+function normalizeBody(t = "") {
+  return t
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 5000);
 }
 
-/* ===== CONTROLLED SENDER ===== */
+function delay() {
+  const jitter = Math.floor(Math.random() * 41) - 20; // natural ±20ms
+  return new Promise(r => setTimeout(r, BASE_DELAY_MS + jitter));
+}
+
 async function sendSafely(transporter, mails, gmail) {
   let sent = 0;
+
   for (let i = 0; i < mails.length; i += PARALLEL) {
     const batch = mails.slice(i, i + PARALLEL);
-    const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
+
+    const results = await Promise.allSettled(
+      batch.map(m => transporter.sendMail(m))
+    );
 
     results.forEach(r => {
       if (r.status === "fulfilled") {
@@ -77,13 +67,16 @@ async function sendSafely(transporter, mails, gmail) {
         failStreak[gmail] = 0;
       } else {
         failStreak[gmail] = (failStreak[gmail] || 0) + 1;
+        console.log("Send error:", r.reason?.message);
       }
     });
 
-    await delayWithJitter(BASE_DELAY_MS);
-    // protect reputation
+    await delay();
+
+    // protect account if repeated failures
     if ((failStreak[gmail] || 0) >= 5) break;
   }
+
   return sent;
 }
 
@@ -97,36 +90,39 @@ app.post("/send", async (req, res) => {
   if (!emailRegex.test(gmail))
     return res.json({ success: false, msg: "Invalid Gmail" });
 
-  // recipients: valid + unique
-  let recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => emailRegex.test(r));
+  let recipients = to
+    .split(/,|\n/)
+    .map(r => r.trim())
+    .filter(r => emailRegex.test(r));
+
   recipients = [...new Set(recipients)];
   if (recipients.length === 0)
     return res.json({ success: false, msg: "No valid recipients" });
 
-  // hourly cap
   if (!stats[gmail]) stats[gmail] = { count: 0 };
   if (stats[gmail].count >= HOURLY_LIMIT)
     return res.json({ success: false, msg: "Hourly limit reached" });
+
   const remaining = HOURLY_LIMIT - stats[gmail].count;
   if (recipients.length > remaining)
     return res.json({ success: false, msg: "Limit full" });
 
-  // trusted Gmail SMTP
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
   });
-  try { await transporter.verify(); }
-  catch { return res.json({ success: false, msg: "Gmail login failed" }); }
 
-  // ultra-safe text: rewrite + clean
-  const finalText = cleanText(rewriteToNeutral(message));
+  try {
+    await transporter.verify();
+  } catch {
+    return res.json({ success: false, msg: "Gmail login failed" });
+  }
 
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: cleanSubject(subject),
-    text: finalText,
+    subject: normalizeSubject(subject),
+    text: normalizeBody(message),
     replyTo: gmail
   }));
 
@@ -137,5 +133,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Ultra-Safe Mail Server running");
+  console.log("SAFE Mail Server running");
 });
