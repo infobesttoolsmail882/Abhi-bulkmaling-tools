@@ -10,40 +10,39 @@ const app = express();
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/* ===== ROOT ===== */
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ===== SAFE LIMITS (CONSERVATIVE) ===== */
-const HOURLY_LIMIT = 25;     // per Gmail / hour
-const DAILY_LIMIT  = 80;     // per Gmail / day
-const PARALLEL = 3;          // SAME SPEED
-const BASE_DELAY_MS = 120;   // SAME SPEED
+/* ===== INBOX-SAFE LIMITS (VERY CONSERVATIVE) ===== */
+const HOURLY_LIMIT = 20;     // safer than 25
+const DAILY_LIMIT  = 60;     // safer than 80
+const PARALLEL = 3;          // SAME SPEED RANGE
+const BASE_DELAY_MS = 120;   // SAME SPEED RANGE
 
-/* ===== STATE ===== */
-let hourlyCount = {};
-let dailyCount = {};
+let hourly = {};
+let daily = {};
 let failStreak = {};
 
 /* Resets */
 setInterval(() => {
-  hourlyCount = {};
+  hourly = {};
   failStreak = {};
 }, 60 * 60 * 1000);
 
 setInterval(() => {
-  dailyCount = {};
+  daily = {};
 }, 24 * 60 * 60 * 1000);
 
-/* ===== HELPERS (NO TEXT CHANGE) ===== */
+/* ===== HELPERS ===== */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function delayWithJitter() {
-  const jitter = Math.floor(Math.random() * 41) - 20; // ±20ms (human-like)
+  const jitter = Math.floor(Math.random() * 41) - 20; // ±20ms
   return new Promise(r => setTimeout(r, BASE_DELAY_MS + jitter));
 }
 
+/* ===== CONTROLLED SENDER ===== */
 async function sendSafely(transporter, mails, gmail) {
   let sent = 0;
 
@@ -54,7 +53,7 @@ async function sendSafely(transporter, mails, gmail) {
       batch.map(m => transporter.sendMail(m))
     );
 
-    results.forEach(r => {
+    for (const r of results) {
       if (r.status === "fulfilled") {
         sent++;
         failStreak[gmail] = 0;
@@ -62,12 +61,12 @@ async function sendSafely(transporter, mails, gmail) {
         failStreak[gmail] = (failStreak[gmail] || 0) + 1;
         console.log("Send error:", r.reason?.message);
       }
-    });
+    }
 
     await delayWithJitter();
 
-    // Protect account if repeated failures
-    if ((failStreak[gmail] || 0) >= 5) break;
+    // Inbox protection: stop early if repeated failures
+    if ((failStreak[gmail] || 0) >= 4) break;
   }
 
   return sent;
@@ -83,7 +82,7 @@ app.post("/send", async (req, res) => {
   if (!emailRegex.test(gmail))
     return res.json({ success: false, msg: "Invalid Gmail" });
 
-  // Validate recipients ONLY (no content change)
+  // One-by-one recipients (NO content change)
   let recipients = to
     .split(/,|\n/)
     .map(r => r.trim())
@@ -94,19 +93,19 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "No valid recipients" });
 
   // Init counters
-  if (!hourlyCount[gmail]) hourlyCount[gmail] = 0;
-  if (!dailyCount[gmail])  dailyCount[gmail]  = 0;
+  if (!hourly[gmail]) hourly[gmail] = 0;
+  if (!daily[gmail])  daily[gmail]  = 0;
 
-  // Limit checks
-  if (hourlyCount[gmail] >= HOURLY_LIMIT)
+  // Limits
+  if (hourly[gmail] >= HOURLY_LIMIT)
     return res.json({ success: false, msg: "Hourly limit reached" });
 
-  if (dailyCount[gmail] >= DAILY_LIMIT)
+  if (daily[gmail] >= DAILY_LIMIT)
     return res.json({ success: false, msg: "Daily limit reached" });
 
   const allowedNow = Math.min(
-    HOURLY_LIMIT - hourlyCount[gmail],
-    DAILY_LIMIT  - dailyCount[gmail]
+    HOURLY_LIMIT - hourly[gmail],
+    DAILY_LIMIT  - daily[gmail]
   );
 
   if (recipients.length > allowedNow)
@@ -115,7 +114,7 @@ app.post("/send", async (req, res) => {
       msg: `Limit reached. Allowed now: ${allowedNow}`
     });
 
-  // Trusted Gmail SMTP
+  // Gmail SMTP (trusted)
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -127,30 +126,33 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  // IMPORTANT: Subject & message go EXACTLY as provided
+  // IMPORTANT: SUBJECT & MESSAGE EXACTLY SAME
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: subject, // unchanged
-    text: message,    // unchanged
-    replyTo: gmail
+    subject: subject,
+    text: message,          // plain text only
+    replyTo: gmail,
+    headers: {
+      "X-Mailer": "Mail"
+    }
   }));
 
   const sent = await sendSafely(transporter, mails, gmail);
 
-  hourlyCount[gmail] += sent;
-  dailyCount[gmail]  += sent;
+  hourly[gmail] += sent;
+  daily[gmail]  += sent;
 
   return res.json({
     success: true,
     sent,
-    hourly: hourlyCount[gmail],
-    daily: dailyCount[gmail]
+    hourly: hourly[gmail],
+    daily: daily[gmail]
   });
 });
 
 /* ===== START ===== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Safe Mail Server running on port", PORT);
+  console.log("REAL INBOX-SAFE Mail Server running on port", PORT);
 });
