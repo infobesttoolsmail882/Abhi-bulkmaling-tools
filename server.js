@@ -27,25 +27,20 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* ===== HELPERS ===== */
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/* Neutral rewrite map (NOT hiding, just clean language) */
-const REWRITE_MAP = [
+/* ===== AUTO SAFE REWRITE (NO HIDING) ===== */
+const SAFE_REWRITE = [
   [/hello\b/gi, "Hi"],
-  [/error\b/gi, "an issue"],
-  [/glitch\b/gi, "a small issue"],
-  [/stops it from showing\b/gi, "may affect how it appears"],
-  [/showing on search platforms\b/gi, "appears online"],
-  [/google\b/gi, "search results"],
+  [/error|glitch|issue\b/gi, "something that may need attention"],
+  [/stops? it from showing|not showing\b/gi, "may be affecting how it appears"],
+  [/search platforms?|google\b/gi, "online"],
   [/screen ?shot\b/gi, "details"],
-  [/can i forward.*email\?/gi, "Would you like me to share the details by email?"]
+  [/can i.*email\?/gi, "Would you like me to share the details by email?"]
 ];
 
-function rewriteToNeutral(text = "") {
+function rewriteToSafeEnglish(text = "") {
   let t = text.replace(/\r\n/g, "\n").trim();
-  REWRITE_MAP.forEach(([pattern, replacement]) => {
-    t = t.replace(pattern, replacement);
+  SAFE_REWRITE.forEach(([pattern, replace]) => {
+    t = t.replace(pattern, replace);
   });
   return t.replace(/\n{3,}/g, "\n\n").slice(0, 5000);
 }
@@ -54,7 +49,7 @@ function cleanSubject(s = "") {
   return s.replace(/\s+/g, " ").trim().slice(0, 150);
 }
 
-function delayWithJitter(base) {
+function delay(base) {
   const jitter = Math.floor(Math.random() * 41) - 20;
   return new Promise(r => setTimeout(r, base + jitter));
 }
@@ -74,13 +69,14 @@ async function sendSafely(transporter, mails, gmail) {
         failStreak[gmail] = (failStreak[gmail] || 0) + 1;
       }
     });
-    await delayWithJitter(BASE_DELAY_MS);
+    await delay(BASE_DELAY_MS);
     if ((failStreak[gmail] || 0) >= 5) break;
   }
   return sent;
 }
 
-/* ===== SEND API ===== */
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
@@ -90,8 +86,7 @@ app.post("/send", async (req, res) => {
   if (!emailRegex.test(gmail))
     return res.json({ success: false, msg: "Invalid Gmail" });
 
-  let recipients = to
-    .split(/,|\n/)
+  let recipients = to.split(/,|\n/)
     .map(r => r.trim())
     .filter(r => emailRegex.test(r));
   recipients = [...new Set(recipients)];
@@ -108,7 +103,7 @@ app.post("/send", async (req, res) => {
   try { await transporter.verify(); }
   catch { return res.json({ success: false, msg: "Gmail login failed" }); }
 
-  const finalText = rewriteToNeutral(message);
+  const finalText = rewriteToSafeEnglish(message);
 
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
@@ -125,5 +120,5 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Safe Mail Server running (neutral rewrite enabled)");
+  console.log("Safe Mail Server running (auto rewrite enabled)");
 });
