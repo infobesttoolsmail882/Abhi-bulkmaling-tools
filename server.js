@@ -15,9 +15,9 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ===== SAFE LIMITS ===== */
-const HOURLY_LIMIT = 25;     // per Gmail per hour
-const DAILY_LIMIT  = 80;     // per Gmail per day
+/* ===== SAFE LIMITS (CONSERVATIVE) ===== */
+const HOURLY_LIMIT = 25;     // per Gmail / hour
+const DAILY_LIMIT  = 80;     // per Gmail / day
 const PARALLEL = 3;          // SAME SPEED
 const BASE_DELAY_MS = 120;   // SAME SPEED
 
@@ -26,7 +26,7 @@ let hourlyCount = {};
 let dailyCount = {};
 let failStreak = {};
 
-/* Reset counters */
+/* Resets */
 setInterval(() => {
   hourlyCount = {};
   failStreak = {};
@@ -40,7 +40,7 @@ setInterval(() => {
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function delayWithJitter() {
-  const jitter = Math.floor(Math.random() * 41) - 20; // ±20ms
+  const jitter = Math.floor(Math.random() * 41) - 20; // ±20ms (human-like)
   return new Promise(r => setTimeout(r, BASE_DELAY_MS + jitter));
 }
 
@@ -66,7 +66,7 @@ async function sendSafely(transporter, mails, gmail) {
 
     await delayWithJitter();
 
-    // Stop early if too many errors (protect account)
+    // Protect account if repeated failures
     if ((failStreak[gmail] || 0) >= 5) break;
   }
 
@@ -77,50 +77,45 @@ async function sendSafely(transporter, mails, gmail) {
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
-  if (!gmail || !apppass || !to || !subject || !message) {
+  if (!gmail || !apppass || !to || !subject || !message)
     return res.json({ success: false, msg: "Missing fields" });
-  }
 
-  if (!emailRegex.test(gmail)) {
+  if (!emailRegex.test(gmail))
     return res.json({ success: false, msg: "Invalid Gmail" });
-  }
 
-  // Prepare recipients (VALIDATE ONLY — NO CONTENT CHANGE)
+  // Validate recipients ONLY (no content change)
   let recipients = to
     .split(/,|\n/)
     .map(r => r.trim())
     .filter(r => emailRegex.test(r));
 
   recipients = [...new Set(recipients)];
-  if (recipients.length === 0) {
+  if (recipients.length === 0)
     return res.json({ success: false, msg: "No valid recipients" });
-  }
 
   // Init counters
   if (!hourlyCount[gmail]) hourlyCount[gmail] = 0;
   if (!dailyCount[gmail])  dailyCount[gmail]  = 0;
 
   // Limit checks
-  if (hourlyCount[gmail] >= HOURLY_LIMIT) {
+  if (hourlyCount[gmail] >= HOURLY_LIMIT)
     return res.json({ success: false, msg: "Hourly limit reached" });
-  }
-  if (dailyCount[gmail] >= DAILY_LIMIT) {
+
+  if (dailyCount[gmail] >= DAILY_LIMIT)
     return res.json({ success: false, msg: "Daily limit reached" });
-  }
 
   const allowedNow = Math.min(
     HOURLY_LIMIT - hourlyCount[gmail],
     DAILY_LIMIT  - dailyCount[gmail]
   );
 
-  if (recipients.length > allowedNow) {
+  if (recipients.length > allowedNow)
     return res.json({
       success: false,
       msg: `Limit reached. Allowed now: ${allowedNow}`
     });
-  }
 
-  // Gmail SMTP (trusted)
+  // Trusted Gmail SMTP
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -132,7 +127,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  // IMPORTANT: SUBJECT & MESSAGE SENT EXACTLY AS PROVIDED
+  // IMPORTANT: Subject & message go EXACTLY as provided
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
