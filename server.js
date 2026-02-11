@@ -14,11 +14,12 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* SAME SPEED */
+/* ===== SAME SPEED SETTINGS ===== */
 const HOURLY_LIMIT = 28;     // per Gmail ID
 const PARALLEL = 3;          // same speed
 const BASE_DELAY_MS = 120;   // same speed range
 
+/* ===== STATE ===== */
 let stats = {};              // hourly counter per gmail
 let failStreak = {};         // consecutive failures
 
@@ -27,7 +28,7 @@ setInterval(() => {
   failStreak = {};
 }, 60 * 60 * 1000);
 
-/* Helpers */
+/* ===== HELPERS (NO TRICKS) ===== */
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function cleanSubject(s = "") {
@@ -73,13 +74,14 @@ async function sendSafely(transporter, mails, gmail) {
 
     await delayWithJitter(BASE_DELAY_MS);
 
-    // Protect account if many consecutive failures
+    // Protect account if repeated failures
     if ((failStreak[gmail] || 0) >= 5) break;
   }
 
   return sent;
 }
 
+/* ===== SEND API ===== */
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
@@ -91,12 +93,11 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Invalid Gmail" });
   }
 
-  // Prepare recipients: valid + unique
+  // Valid + unique recipients only
   let recipients = to
     .split(/,|\n/)
     .map(r => r.trim())
     .filter(r => emailRegex.test(r));
-
   recipients = [...new Set(recipients)];
 
   if (recipients.length === 0) {
@@ -113,7 +114,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Limit full" });
   }
 
-  // Standard Gmail SMTP
+  // Trusted Gmail SMTP
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmail, pass: apppass }
@@ -125,7 +126,7 @@ app.post("/send", async (req, res) => {
     return res.json({ success: false, msg: "Gmail login failed" });
   }
 
-  // One message per recipient
+  // One message per recipient (better reputation)
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
