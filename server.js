@@ -14,13 +14,13 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ================= SAFE CONFIG ================= */
+/* ===== SAFE CONFIG ===== */
 
 const DAILY_LIMIT = 28;      // 1 Gmail = 28 emails
-const HOURLY_LIMIT = 14;     // extra protection
+const HOURLY_LIMIT = 14;     // safety protection
 const PARALLEL = 3;          // fast but controlled
-const BASE_DELAY = 110;      // fast speed
-const MAX_FAIL = 3;          // stop if repeated errors
+const BASE_DELAY = 120;      // natural delay
+const MAX_FAIL = 3;
 
 let dailyCount = {};
 let hourlyCount = {};
@@ -37,11 +37,11 @@ setInterval(() => {
   failCount = {};
 }, 24 * 60 * 60 * 1000);
 
-/* ================= HELPERS ================= */
+/* ===== HELPERS ===== */
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function delay() {
+function wait() {
   return new Promise(resolve =>
     setTimeout(resolve, BASE_DELAY + Math.floor(Math.random() * 40))
   );
@@ -68,7 +68,7 @@ async function sendBatch(transporter, mails, gmail) {
       }
     }
 
-    await delay();
+    await wait();
 
     if (failCount[gmail] >= MAX_FAIL) break;
   }
@@ -76,7 +76,7 @@ async function sendBatch(transporter, mails, gmail) {
   return sent;
 }
 
-/* ================= SEND ROUTE ================= */
+/* ===== SEND ROUTE ===== */
 
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
@@ -143,7 +143,7 @@ app.post("/send", async (req, res) => {
   });
 });
 
-/* ================= START ================= */
+/* ===== START SERVER ===== */
 
 const PORT = process.env.PORT || 3000;
 
