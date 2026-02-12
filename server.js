@@ -7,40 +7,41 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "80kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ===== CONFIG ===== */
-const LIMIT_PER_4HOURS = 28;       // 🔒 28 emails
-const RESET_TIME = 4 * 60 * 60 * 1000; // 4 hours
-const DELAY_MS = 120;              // fast but safe
-const MAX_FAIL = 3;
+/* ================= SAFE CONFIG ================= */
 
-/* ===== STATE ===== */
+const LIMIT_4H = 28;
+const RESET_TIME = 4 * 60 * 60 * 1000;
+const DELAY_MS = 140;         // natural human pace
+const MAX_FAIL = 2;           // stop early to protect reputation
+
 let sentCount = {};
 let failCount = {};
 
-/* ===== AUTO RESET EVERY 4 HOURS ===== */
+/* Reset every 4 hours */
 setInterval(() => {
   sentCount = {};
   failCount = {};
-  console.log("4 Hour limit reset done");
+  console.log("4-hour window reset");
 }, RESET_TIME);
 
-/* ===== HELPERS ===== */
+/* ================= HELPERS ================= */
+
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function wait() {
-  return new Promise(resolve =>
-    setTimeout(resolve, DELAY_MS + Math.floor(Math.random() * 40))
+function delay() {
+  return new Promise(r =>
+    setTimeout(r, DELAY_MS + Math.floor(Math.random() * 60))
   );
 }
 
-async function sendEmails(transporter, mails, gmail) {
+async function sendOneByOne(transporter, mails, gmail) {
   let sent = 0;
 
   for (const mail of mails) {
@@ -53,33 +54,34 @@ async function sendEmails(transporter, mails, gmail) {
 
     } catch (err) {
       failCount[gmail] = (failCount[gmail] || 0) + 1;
-      console.log("Send error:", err.message);
 
+      // Early stop to protect account reputation
       if (failCount[gmail] >= MAX_FAIL) break;
     }
 
-    await wait();
+    await delay();
   }
 
   return sent;
 }
 
-/* ===== SEND ROUTE ===== */
+/* ================= SEND ROUTE ================= */
+
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
   if (!gmail || !apppass || !to || !subject || !message)
-    return res.json({ success: false, msg: "Missing fields" });
+    return res.json({ success:false, msg:"Missing fields" });
 
   if (!emailRegex.test(gmail))
-    return res.json({ success: false, msg: "Invalid Gmail address" });
+    return res.json({ success:false, msg:"Invalid Gmail" });
 
   sentCount[gmail] = sentCount[gmail] || 0;
 
-  if (sentCount[gmail] >= LIMIT_PER_4HOURS)
+  if (sentCount[gmail] >= LIMIT_4H)
     return res.json({
-      success: false,
-      msg: "28 email limit reached (4 hours limit)"
+      success:false,
+      msg:"28 email limit reached for this 4-hour window"
     });
 
   let recipients = to
@@ -89,46 +91,45 @@ app.post("/send", async (req, res) => {
 
   recipients = [...new Set(recipients)];
 
-  const remaining = LIMIT_PER_4HOURS - sentCount[gmail];
+  const remaining = LIMIT_4H - sentCount[gmail];
 
   if (recipients.length > remaining)
     return res.json({
-      success: false,
-      msg: `Only ${remaining} emails allowed in this 4-hour window`
+      success:false,
+      msg:`Only ${remaining} emails allowed in this window`
     });
 
   const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: gmail, pass: apppass }
+    service:"gmail",
+    auth:{ user:gmail, pass:apppass }
   });
 
-  try {
-    await transporter.verify();
-  } catch {
-    return res.json({ success: false, msg: "Gmail authentication failed" });
+  try { await transporter.verify(); }
+  catch {
+    return res.json({ success:false, msg:"Authentication failed" });
   }
 
   const mails = recipients.map(r => ({
-    from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
-    to: r,
-    subject: subject,   // unchanged
-    text: message,      // unchanged
-    replyTo: gmail
+    from:`"${(senderName||"").trim()||gmail}" <${gmail}>`,
+    to:r,
+    subject:subject,     // unchanged
+    text:message,        // plain text only
+    replyTo:gmail
   }));
 
-  const sent = await sendEmails(transporter, mails, gmail);
+  const sent = await sendOneByOne(transporter, mails, gmail);
 
   res.json({
-    success: true,
+    success:true,
     sent,
-    used: sentCount[gmail],
-    limit: LIMIT_PER_4HOURS
+    used:sentCount[gmail],
+    limit:LIMIT_4H
   });
 });
 
-/* ===== START SERVER ===== */
-const PORT = process.env.PORT || 3000;
+/* ================= START ================= */
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Mail server running (28 emails per 4 hours)");
+  console.log("Inbox-safe mail server running on port", PORT);
 });
