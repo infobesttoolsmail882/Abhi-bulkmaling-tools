@@ -14,14 +14,13 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ==============================
-   SAFE CONFIGURATION
-============================== */
+/* ================= SAFE CONFIG ================= */
 
-const DAILY_LIMIT = 28;        // 1 Gmail = 28 emails/day
-const HOURLY_LIMIT = 12;       // extra protection
-const DELAY_MS = 130;          // natural delay
-const MAX_FAILS = 3;           // stop on repeated errors
+const DAILY_LIMIT = 28;      // 1 Gmail = 28 emails
+const HOURLY_LIMIT = 14;     // extra protection
+const PARALLEL = 3;          // fast but controlled
+const BASE_DELAY = 110;      // fast speed
+const MAX_FAIL = 3;          // stop if repeated errors
 
 let dailyCount = {};
 let hourlyCount = {};
@@ -38,55 +37,55 @@ setInterval(() => {
   failCount = {};
 }, 24 * 60 * 60 * 1000);
 
-/* ==============================
-   HELPERS
-============================== */
+/* ================= HELPERS ================= */
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function wait() {
+function delay() {
   return new Promise(resolve =>
-    setTimeout(resolve, DELAY_MS + Math.floor(Math.random() * 50))
+    setTimeout(resolve, BASE_DELAY + Math.floor(Math.random() * 40))
   );
 }
 
-async function sendSafely(transporter, mails, gmail) {
+async function sendBatch(transporter, mails, gmail) {
   let sent = 0;
 
-  for (const mail of mails) {
-    try {
-      await transporter.sendMail(mail);
+  for (let i = 0; i < mails.length; i += PARALLEL) {
+    const batch = mails.slice(i, i + PARALLEL);
 
-      sent++;
-      dailyCount[gmail] = (dailyCount[gmail] || 0) + 1;
-      hourlyCount[gmail] = (hourlyCount[gmail] || 0) + 1;
-      failCount[gmail] = 0;
+    const results = await Promise.allSettled(
+      batch.map(m => transporter.sendMail(m))
+    );
 
-    } catch (err) {
-      failCount[gmail] = (failCount[gmail] || 0) + 1;
-      console.log("Send error:", err.message);
-
-      if (failCount[gmail] >= MAX_FAILS) break;
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        sent++;
+        dailyCount[gmail] = (dailyCount[gmail] || 0) + 1;
+        hourlyCount[gmail] = (hourlyCount[gmail] || 0) + 1;
+        failCount[gmail] = 0;
+      } else {
+        failCount[gmail] = (failCount[gmail] || 0) + 1;
+      }
     }
 
-    await wait();
+    await delay();
+
+    if (failCount[gmail] >= MAX_FAIL) break;
   }
 
   return sent;
 }
 
-/* ==============================
-   SEND ROUTE
-============================== */
+/* ================= SEND ROUTE ================= */
 
 app.post("/send", async (req, res) => {
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
   if (!gmail || !apppass || !to || !subject || !message)
-    return res.json({ success: false, msg: "Missing required fields" });
+    return res.json({ success: false, msg: "Missing fields" });
 
   if (!emailRegex.test(gmail))
-    return res.json({ success: false, msg: "Invalid Gmail address" });
+    return res.json({ success: false, msg: "Invalid Gmail" });
 
   dailyCount[gmail] = dailyCount[gmail] || 0;
   hourlyCount[gmail] = hourlyCount[gmail] || 0;
@@ -110,10 +109,7 @@ app.post("/send", async (req, res) => {
   );
 
   if (recipients.length > allowed)
-    return res.json({
-      success: false,
-      msg: `Only ${allowed} emails allowed now`
-    });
+    return res.json({ success: false, msg: `Only ${allowed} allowed now` });
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -126,30 +122,28 @@ app.post("/send", async (req, res) => {
   try {
     await transporter.verify();
   } catch {
-    return res.json({ success: false, msg: "Gmail authentication failed" });
+    return res.json({ success: false, msg: "Authentication failed" });
   }
 
   const mails = recipients.map(r => ({
     from: `"${(senderName || "").trim() || gmail}" <${gmail}>`,
     to: r,
-    subject: subject,     // unchanged
-    text: message,        // unchanged (plain text)
+    subject: subject,   // unchanged
+    text: message,      // unchanged (plain text only)
     replyTo: gmail
   }));
 
-  const sent = await sendSafely(transporter, mails, gmail);
+  const sent = await sendBatch(transporter, mails, gmail);
 
   res.json({
     success: true,
     sent,
-    dailyUsed: dailyCount[gmail],
-    dailyLimit: DAILY_LIMIT
+    usedToday: dailyCount[gmail],
+    limit: DAILY_LIMIT
   });
 });
 
-/* ==============================
-   START SERVER
-============================== */
+/* ================= START ================= */
 
 const PORT = process.env.PORT || 3000;
 
