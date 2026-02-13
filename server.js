@@ -11,102 +11,93 @@ const app = express();
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/* SPEED & LIMIT SETTINGS (Aapke logic ke mutabiq) */
+/* LIMITS & SPEED SETTINGS */
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
-const DELAY_MS = 120; // Fast execution delay
+const DELAY_MS = 120; // Fast response delay
 
 let stats = {};
-// Har 1 ghante mein limit reset karne ke liye
+// Hourly Reset Logic
 setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Route for Launcher
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
-});
+/* Clean Formatting Logic (Bypasses Spam Fingerprinting) */
+const getSafeHTML = (msg) => {
+    const ghostID = crypto.randomBytes(8).toString('hex');
+    return `<html><body style="font-family: Arial, sans-serif;">${msg.replace(/\n/g, '<br>')}<div style="display:none; color:transparent; font-size:0px;">${ghostID}</div></body></html>`;
+};
 
-/* Controlled Parallel Engine for Inbox Delivery */
-async function sendSafely(transporter, mails) {
-  let sentCount = 0;
-
-  for (let i = 0; i < mails.length; i += PARALLEL) {
-    const batch = mails.slice(i, i + PARALLEL);
-
-    // Parallel processing with batching
-    const results = await Promise.allSettled(
-      batch.map(m => transporter.sendMail(m))
-    );
-
-    results.forEach(r => {
-      if (r.status === "fulfilled") sentCount++;
-      else console.log("SMTP Rejection:", r.reason?.message);
-    });
-
-    // Fast delay to maintain server speed
-    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
-  }
-  return sentCount;
+/* High-Speed Parallel Engine */
+async function sendParallel(transporter, mails) {
+    let successCount = 0;
+    for (let i = 0; i < mails.length; i += PARALLEL) {
+        const batch = mails.slice(i, i + PARALLEL);
+        const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
+        
+        results.forEach(r => {
+            if (r.status === "fulfilled") successCount++;
+        });
+        
+        // Anti-Detection Delay
+        await new Promise(res => setTimeout(res, DELAY_MS));
+    }
+    return successCount;
 }
 
 app.post("/send", async (req, res) => {
-  const { senderName, gmail, apppass, to, subject, message } = req.body;
+    const { senderName, gmail, apppass, to, subject, message } = req.body;
 
-  if (!gmail || !apppass || !to || !subject || !message)
-    return res.json({ success: false, msg: "Missing fields ❌" });
-
-  if (!stats[gmail]) stats[gmail] = { count: 0 };
-  
-  // Check Limit
-  if (stats[gmail].count >= HOURLY_LIMIT)
-    return res.json({ success: false, msg: `Hourly limit (${HOURLY_LIMIT}) reached ❌` });
-
-  const recipients = to
-    .split(/,|\n/)
-    .map(r => r.trim())
-    .filter(r => emailRegex.test(r));
-
-  const remaining = HOURLY_LIMIT - stats[gmail].count;
-
-  if (recipients.length === 0)
-    return res.json({ success: false, msg: "No valid recipients ❌" });
-
-  if (recipients.length > remaining)
-    return res.json({ success: false, msg: `Only ${remaining} slots left for this hour ❌` });
-
-  // Transporter setup
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: gmail, pass: apppass }
-  });
-
-  /* INBOX SECURITY INJECTION: No word change, just technical uniqueness */
-  const mails = recipients.map(r => ({
-    from: `"${senderName || gmail}" <${gmail}>`,
-    to: r,
-    subject: subject,
-    text: message,
-    // Invisible headers that Gmail trusts
-    headers: {
-      'X-Mailer': 'Microsoft Outlook 16.0',
-      'X-Priority': '3 (Normal)',
-      'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
-      'X-Entity-Ref-ID': crypto.randomBytes(12).toString('hex')
+    if (!gmail || !apppass || !to || !subject || !message) {
+        return res.json({ success: false, msg: "All fields required ❌" });
     }
-  }));
 
-  try {
-    const sent = await sendSafely(transporter, mails);
-    stats[gmail].count += sent;
-    res.json({ success: true, sent });
-  } catch (err) {
-    console.error("Critical Failure:", err.message);
-    res.json({ success: false, msg: "Connection failed ❌" });
-  }
+    if (!stats[gmail]) stats[gmail] = { count: 0 };
+    if (stats[gmail].count >= HOURLY_LIMIT) {
+        return res.json({ success: false, msg: "Limit (28/hr) reached! ❌" });
+    }
+
+    const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => emailRegex.test(r));
+    const remaining = HOURLY_LIMIT - stats[gmail].count;
+
+    if (recipients.length > remaining) {
+        return res.json({ success: false, msg: `Only ${remaining} slots available! ❌` });
+    }
+
+    // SMTP Configuration with High-Trust Settings
+    const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: gmail, pass: apppass },
+        pool: true, // Reuses connections for speed
+        maxConnections: 3,
+        maxMessages: 28
+    });
+
+    /* GENERATING INBOX-SAFE MAILS */
+    const mails = recipients.map(r => ({
+        from: `"${senderName || gmail}" <${gmail}>`,
+        to: r,
+        subject: subject,
+        html: getSafeHTML(message),
+        // Professional Headers to prevent Spam/Block
+        headers: {
+            'X-Mailer': 'Microsoft Outlook 16.0',
+            'X-Priority': '3 (Normal)',
+            'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
+            'X-Entity-Ref-ID': crypto.randomBytes(10).toString('hex')
+        }
+    }));
+
+    try {
+        const sent = await sendParallel(transporter, mails);
+        stats[gmail].count += sent;
+        res.json({ success: true, sent });
+    } catch (err) {
+        res.json({ success: false, msg: "Delivery Engine Error ❌" });
+    }
 });
+
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Safe Mail Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Inbox-Safe Server running on port ${PORT}`));
