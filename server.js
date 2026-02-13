@@ -11,102 +11,94 @@ const app = express();
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/* SPEED & LIMIT SETTINGS (Aapke logic ke mutabiq) */
+/* CONFIGURATION (Aapke logic ke mutabiq) */
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
-const DELAY_MS = 120; // Fast execution delay
+const DELAY_MS = 120;
 
 let stats = {};
-// Har 1 ghante mein limit reset karne ke liye
-setInterval(() => { stats = {}; }, 60 * 60 * 1000);
+setInterval(() => { stats = {}; }, 60 * 60 * 1000); // Reset every hour
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Route for Launcher
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
-});
+/* INBOX SAFETY: Technical Signature Injection */
+const getInboxSafeHTML = (msg) => {
+    // Unique ID jo recipient ko nahi dikhegi but Gmail ka pattern break karegi
+    const ghostID = crypto.randomBytes(12).toString('hex');
+    return `
+    <html>
+        <body style="font-family: 'Segoe UI', Arial, sans-serif; color: #333;">
+            <div style="padding: 10px;">${msg.replace(/\n/g, '<br>')}</div>
+            <div style="font-size:0px; color:transparent; opacity:0; mso-hide:all;">RefID-${ghostID}</div>
+        </body>
+    </html>`;
+};
 
-/* Controlled Parallel Engine for Inbox Delivery */
-async function sendSafely(transporter, mails) {
-  let sentCount = 0;
-
-  for (let i = 0; i < mails.length; i += PARALLEL) {
-    const batch = mails.slice(i, i + PARALLEL);
-
-    // Parallel processing with batching
-    const results = await Promise.allSettled(
-      batch.map(m => transporter.sendMail(m))
-    );
-
-    results.forEach(r => {
-      if (r.status === "fulfilled") sentCount++;
-      else console.log("SMTP Rejection:", r.reason?.message);
-    });
-
-    // Fast delay to maintain server speed
-    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
-  }
-  return sentCount;
+/* Parallel Processing Engine */
+async function sendBatch(transporter, mails) {
+    let sent = 0;
+    for (let i = 0; i < mails.length; i += PARALLEL) {
+        const batch = mails.slice(i, i + PARALLEL);
+        const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
+        
+        results.forEach(r => { if (r.status === "fulfilled") sent++; });
+        
+        // Fast but human-like gap
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+    return sent;
 }
 
 app.post("/send", async (req, res) => {
-  const { senderName, gmail, apppass, to, subject, message } = req.body;
+    const { senderName, gmail, apppass, to, subject, message } = req.body;
 
-  if (!gmail || !apppass || !to || !subject || !message)
-    return res.json({ success: false, msg: "Missing fields ❌" });
+    if (!gmail || !apppass || !to || !subject || !message)
+        return res.json({ success: false, msg: "Fields empty ❌" });
 
-  if (!stats[gmail]) stats[gmail] = { count: 0 };
-  
-  // Check Limit
-  if (stats[gmail].count >= HOURLY_LIMIT)
-    return res.json({ success: false, msg: `Hourly limit (${HOURLY_LIMIT}) reached ❌` });
+    if (!stats[gmail]) stats[gmail] = { count: 0 };
+    if (stats[gmail].count >= HOURLY_LIMIT)
+        return res.json({ success: false, msg: "Hourly limit (28) reached ❌" });
 
-  const recipients = to
-    .split(/,|\n/)
-    .map(r => r.trim())
-    .filter(r => emailRegex.test(r));
+    const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => emailRegex.test(r));
+    const remaining = HOURLY_LIMIT - stats[gmail].count;
 
-  const remaining = HOURLY_LIMIT - stats[gmail].count;
+    if (recipients.length > remaining)
+        return res.json({ success: false, msg: `Limit error! Only ${remaining} left.` });
 
-  if (recipients.length === 0)
-    return res.json({ success: false, msg: "No valid recipients ❌" });
+    // TRANSPORTER: High Trust Settings
+    const transporter = nodemailer.createTransport({
+        service: "gmail",
+        pool: true, // Reuses connections (Very important for Inbox)
+        maxConnections: 3,
+        maxMessages: 28,
+        auth: { user: gmail, pass: apppass }
+    });
 
-  if (recipients.length > remaining)
-    return res.json({ success: false, msg: `Only ${remaining} slots left for this hour ❌` });
+    const mails = recipients.map(r => ({
+        from: `"${senderName || gmail}" <${gmail}>`,
+        to: r,
+        subject: subject,
+        html: getInboxSafeHTML(message),
+        // Professional SMTP Headers (Bypasses Spam Filters)
+        headers: {
+            'X-Mailer': 'Microsoft Outlook 16.0',
+            'X-Priority': '3 (Normal)',
+            'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
+            'X-Entity-Ref-ID': crypto.randomBytes(10).toString('hex'),
+            'List-Unsubscribe': `<mailto:${gmail}?subject=unsubscribe>`
+        }
+    }));
 
-  // Transporter setup
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: gmail, pass: apppass }
-  });
-
-  /* INBOX SECURITY INJECTION: No word change, just technical uniqueness */
-  const mails = recipients.map(r => ({
-    from: `"${senderName || gmail}" <${gmail}>`,
-    to: r,
-    subject: subject,
-    text: message,
-    // Invisible headers that Gmail trusts
-    headers: {
-      'X-Mailer': 'Microsoft Outlook 16.0',
-      'X-Priority': '3 (Normal)',
-      'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
-      'X-Entity-Ref-ID': crypto.randomBytes(12).toString('hex')
+    try {
+        const totalSent = await sendBatch(transporter, mails);
+        stats[gmail].count += totalSent;
+        res.json({ success: true, sent: totalSent });
+    } catch (err) {
+        res.json({ success: false, msg: "Engine Error ❌" });
     }
-  }));
-
-  try {
-    const sent = await sendSafely(transporter, mails);
-    stats[gmail].count += sent;
-    res.json({ success: true, sent });
-  } catch (err) {
-    console.error("Critical Failure:", err.message);
-    res.json({ success: false, msg: "Connection failed ❌" });
-  }
 });
+
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Safe Mail Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Safe Server running on Port ${PORT}`));
