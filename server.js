@@ -16,7 +16,7 @@ const DELAY_MS = 120;
 let stats = {};
 setInterval(() => { stats = {}; }, 3600000);
 
-// --- 10 SAFE TEMPLATES INTERNAL ---
+// 🛡️ 10 PRO TEMPLATES (Built-in for 90% Inbox)
 const templates = [
     { s: "Quick observation regarding your site", b: "Hi, I noticed a minor technical discrepancy on your site that might be affecting its online reach. Would it be okay if I forward a screenshot of what I found?" },
     { s: "Site performance note", b: "Hello, I was reviewing some site metrics and spotted a small indexing glitch on your page. Can I share a quick visual report with you?" },
@@ -31,38 +31,42 @@ const templates = [
 ];
 
 async function sendBatch(transporter, mails) {
-    let sent = 0;
+    let success = 0;
     for (let i = 0; i < mails.length; i += PARALLEL) {
         const batch = mails.slice(i, i + PARALLEL);
-        await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
-        sent += batch.length;
+        const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
+        results.forEach(r => { if (r.status === "fulfilled") success++; });
         await new Promise(r => setTimeout(r, DELAY_MS));
     }
-    return sent;
+    return success;
 }
 
 app.post("/send", async (req, res) => {
     const { senderName, gmail, apppass, to } = req.body;
-    if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Missing fields" });
+    if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Missing fields ❌" });
 
     if (!stats[gmail]) stats[gmail] = 0;
     const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
     
     if (stats[gmail] + recipients.length > HOURLY_LIMIT) 
-        return res.json({ success: false, msg: "Hourly limit (28) exceeded" });
+        return res.json({ success: false, msg: `Limit (${HOURLY_LIMIT}) Full ❌` });
 
     const transporter = nodemailer.createTransport({
         service: "gmail", pool: true, auth: { user: gmail, pass: apppass }
     });
 
     const mails = recipients.map(r => {
-        const tpl = templates[Math.floor(Math.random() * templates.length)]; // Random Template
+        const tpl = templates[Math.floor(Math.random() * templates.length)];
         return {
             from: `"${senderName || gmail}" <${gmail}>`,
             to: r,
             subject: tpl.s,
-            text: `${tpl.b}\n\nThanks,\n${senderName || 'Technical Team'}`,
-            headers: { 'X-Mailer': 'Microsoft Outlook 16.0', 'Message-ID': `<${crypto.randomUUID()}@gmail.com>` }
+            html: `<div style="font-family:Arial;color:#333;">${tpl.b}<br><br>Thanks,<br>${senderName || 'Technical Support'}</div>`,
+            headers: { 
+                'X-Mailer': 'Microsoft Outlook 16.0', 
+                'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
+                'X-Entity-ID': crypto.randomBytes(8).toString('hex')
+            }
         };
     });
 
@@ -70,7 +74,7 @@ app.post("/send", async (req, res) => {
         const count = await sendBatch(transporter, mails);
         stats[gmail] += count;
         res.json({ success: true, sent: count });
-    } catch (e) { res.json({ success: false, msg: "Error" }); }
+    } catch (e) { res.json({ success: false, msg: "SMTP Error ❌" }); }
 });
 
-app.listen(3000, () => console.log("Server Ready"));
+app.listen(3000, () => console.log("✅ Engine running on port 3000"));
