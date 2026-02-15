@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json({ limit: "150kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Aapki fixed limits
+// --- Aapki Limits (Fixed) ---
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
 const DELAY_MS = 120; 
@@ -19,90 +19,81 @@ const DELAY_MS = 120;
 let stats = {};
 setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
-/* 🛡️ ULTRA-SAFE FINGERPRINTING ENGINE */
-const bypassFilters = (text) => {
-    // Zero-width characters (Invisible to humans, Unique to AI)
-    const zwc = ["\u200b", "\u200c", "\u200d", "\uFEFF"];
-    let uniqueTail = "";
-    for(let i=0; i<15; i++) {
-        uniqueTail += zwc[Math.floor(Math.random() * zwc.length)];
-    }
-    
-    // Original content maintained + Invisible uniqueness added
+/* 🛡️ INBOX PROTECTION LOGIC */
+const buildSecureHTML = (content) => {
+    // Har mail ko technical level par unique banane ke liye invisible hash
+    const ghostCode = crypto.randomBytes(8).toString('hex');
     return `
-    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #202124;">
-        ${text.replace(/\n/g, '<br>')}
-        <div style="display:none !important; visibility:hidden; mso-hide:all; font-size:0px;">
-            ${crypto.randomBytes(16).toString('hex')} ${uniqueTail}
-        </div>
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; color: #202124; line-height: 1.5;">
+        ${content.replace(/\n/g, '<br>')}
+        <div style="display:none; color:transparent; font-size:0px;">#${ghostCode}</div>
     </div>`;
 };
 
-async function secureBatchSend(transporter, mailList) {
-    let success = 0;
-    for (let i = 0; i < mailList.length; i += PARALLEL) {
-        const batch = mailList.slice(i, i + PARALLEL);
+async function deliverMails(transporter, mailQueue) {
+    let successCount = 0;
+    for (let i = 0; i < mailQueue.length; i += PARALLEL) {
+        const batch = mailQueue.slice(i, i + PARALLEL);
         const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
         
-        results.forEach(res => { if (res.status === "fulfilled") success++; });
+        results.forEach(res => { if (res.status === "fulfilled") successCount++; });
         
-        // Anti-Bot Delay (Human rhythm)
+        // Safety gap to mimic human speed
         await new Promise(r => setTimeout(r, DELAY_MS + Math.random() * 50));
     }
-    return success;
+    return successCount;
 }
 
 app.post("/send", async (req, res) => {
     const { senderName, gmail, apppass, to, subject, message } = req.body;
 
     if (!gmail || !apppass || !to || !subject || !message)
-        return res.json({ success: false, msg: "Missing fields ❌" });
+        return res.json({ success: false, msg: "Missing Info ❌" });
 
     if (!stats[gmail]) stats[gmail] = { count: 0 };
     if (stats[gmail].count >= HOURLY_LIMIT)
-        return res.json({ success: false, msg: "Hourly limit reached ❌" });
+        return res.json({ success: false, msg: "Limit Reached ❌" });
 
     const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
-    const quota = HOURLY_LIMIT - stats[gmail].count;
+    const quotaLeft = HOURLY_LIMIT - stats[gmail].count;
 
-    if (recipients.length > quota)
-        return res.json({ success: false, msg: `Limit: Only ${quota} left.` });
+    if (recipients.length > quotaLeft)
+        return res.json({ success: false, msg: `Only ${quotaLeft} slots left.` });
 
-    // 🏆 LEGITIMATE SMTP HANDSHAKE
+    // 🏆 PROFESSIONAL SMTP CONFIG
     const transporter = nodemailer.createTransport({
         service: "gmail",
-        pool: true, 
-        maxConnections: 3,
+        pool: true,           // Important: connection reuse karta hai
+        maxConnections: 3,    // Google guidelines ke hisaab se
         maxMessages: 28,
-        rateDelta: 2000,
-        rateLimit: 5,
         auth: { user: gmail, pass: apppass }
     });
 
     const mails = recipients.map(r => ({
         from: `"${senderName || gmail}" <${gmail}>`,
         to: r,
-        subject: `${subject} ${"\u200c".repeat(Math.floor(Math.random() * 5))}`,
-        html: bypassFilters(message),
+        subject: subject,
+        html: buildSecureHTML(message),
+        // Corporate SMTP Headers
         headers: {
             'X-Mailer': 'Microsoft Outlook 16.0',
             'X-Priority': '3',
             'Message-ID': `<${crypto.randomUUID()}@mail.gmail.com>`,
-            'X-Report-Abuse-To': `mailto:${gmail}`,
+            'X-Entity-ID': crypto.randomBytes(12).toString('base64'),
             'Importance': 'normal'
         }
     }));
 
     try {
-        const count = await secureBatchSend(transporter, mails);
-        stats[gmail].count += count;
-        res.json({ success: true, sent: count });
+        const sent = await deliverMails(transporter, mails);
+        stats[gmail].count += sent;
+        res.json({ success: true, sent });
     } catch (err) {
-        res.json({ success: false, msg: "Connection Refused ❌" });
+        res.json({ success: false, msg: "Server Error ❌" });
     }
 });
 
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Secure Engine Online: ${PORT}`));
+const PORT = 3000;
+app.listen(PORT, () => console.log(`🚀 Inbox-Safe Engine Ready: Port ${PORT}`));
