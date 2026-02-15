@@ -16,19 +16,23 @@ const DELAY_MS = 120;
 let stats = {};
 setInterval(() => { stats = {}; }, 3600000);
 
-// 🛡️ 10 PRO TEMPLATES (Built-in for 90% Inbox)
-const templates = [
-    { s: "Quick observation regarding your site", b: "Hi, I noticed a minor technical discrepancy on your site that might be affecting its online reach. Would it be okay if I forward a screenshot of what I found?" },
-    { s: "Site performance note", b: "Hello, I was reviewing some site metrics and spotted a small indexing glitch on your page. Can I share a quick visual report with you?" },
-    { s: "Just a quick heads-up", b: "Hey, I came across a small configuration hurdle on your website that’s hindering its search presence. May I provide a quick capture of the issue?" },
-    { s: "Important site visibility update", b: "Greetings, I've identified a specific technical factor that is currently limiting your platform's organic growth. Should I send over the documented evidence?" },
-    { s: "Found a small display issue", b: "Hi there, while browsing your portal, I noticed a small backend anomaly that's restricting its full visibility. Can I relay the findings to you?" },
-    { s: "Regarding your web presence", b: "Hi, I performed a brief audit and found a small technical gap that's affecting how your site shows up. Can I provide more details and a visual?" },
-    { s: "Question about your site's display", b: "Hey, I noticed a small hurdle on your platform today that’s affecting its search results. It’s a simple fix—can I send you a quick report?" },
-    { s: "Site visibility report", b: "Hello, I’ve identified a specific indexing incident on your website that might be hindering its search traffic. May I email you the details?" },
-    { s: "Quick note for you", b: "Hi, I found a minor technical glitch on your site that’s restricting its online visibility. Would you like me to share the visual proof?" },
-    { s: "Observation on your portal", b: "Greetings, I noticed some visibility issues with your online platform that might affect search rankings. May I forward the details by email?" }
-];
+// 🛡️ SMART SPINNER: Yeh words ko change karega bina meaning badle
+const spinText = (text) => {
+    const map = {
+        "technical error": ["indexing glitch", "display anomaly", "backend discrepancy", "configuration gap"],
+        "blocks": ["restricts", "limits", "impacts", "hinders"],
+        "Google": ["search engines", "online visibility", "organic search", "web results"],
+        "screen shot": ["visual report", "capture", "proof", "image"],
+        "email": ["message", "mail", "correspondence"]
+    };
+
+    let spun = text;
+    for (const [key, values] of Object.entries(map)) {
+        const regex = new RegExp(key, "gi");
+        spun = spun.replace(regex, () => values[Math.floor(Math.random() * values.length)]);
+    }
+    return spun;
+};
 
 async function sendBatch(transporter, mails) {
     let success = 0;
@@ -42,28 +46,38 @@ async function sendBatch(transporter, mails) {
 }
 
 app.post("/send", async (req, res) => {
-    const { senderName, gmail, apppass, to } = req.body;
+    const { senderName, gmail, apppass, to, subject, message } = req.body;
+    
     if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Missing fields ❌" });
 
     if (!stats[gmail]) stats[gmail] = 0;
     const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
     
     if (stats[gmail] + recipients.length > HOURLY_LIMIT) 
-        return res.json({ success: false, msg: `Limit (${HOURLY_LIMIT}) Full ❌` });
+        return res.json({ success: false, msg: "Limit (28/hr) reached ❌" });
 
     const transporter = nodemailer.createTransport({
         service: "gmail", pool: true, auth: { user: gmail, pass: apppass }
     });
 
     const mails = recipients.map(r => {
-        const tpl = templates[Math.floor(Math.random() * templates.length)];
+        // Har mail ke liye subject aur body ko spin karega
+        const spunSubject = spinText(subject || "Quick site observation");
+        const spunMessage = spinText(message || "");
+        const ghostID = crypto.randomBytes(6).toString('hex');
+
         return {
             from: `"${senderName || gmail}" <${gmail}>`,
             to: r,
-            subject: tpl.s,
-            html: `<div style="font-family:Arial;color:#333;">${tpl.b}<br><br>Thanks,<br>${senderName || 'Technical Support'}</div>`,
+            subject: spunSubject,
+            html: `
+                <div style="font-family: Arial, sans-serif; color: #333;">
+                    ${spunMessage.replace(/\n/g, '<br>')}
+                    <br><br>
+                    <span style="display:none; color:transparent;">#ref-${ghostID}</span>
+                </div>`,
             headers: { 
-                'X-Mailer': 'Microsoft Outlook 16.0', 
+                'X-Mailer': 'Microsoft Outlook 16.0',
                 'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
                 'X-Entity-ID': crypto.randomBytes(8).toString('hex')
             }
@@ -77,4 +91,4 @@ app.post("/send", async (req, res) => {
     } catch (e) { res.json({ success: false, msg: "SMTP Error ❌" }); }
 });
 
-app.listen(3000, () => console.log("✅ Engine running on port 3000"));
+app.listen(3000, () => console.log("✅ Smart Spinner Engine Online"));
