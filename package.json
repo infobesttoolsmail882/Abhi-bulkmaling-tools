@@ -1,6 +1,6 @@
 {
-  "name": "inbox-vanguard",
-  "version": "2.0.0",
+  "name": "pro-inbox-mailer",
+  "version": "1.5.0",
   "type": "module",
   "dependencies": {
     "express": "^4.19.2",
