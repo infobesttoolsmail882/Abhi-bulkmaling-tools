@@ -1,8 +1,7 @@
 {
-  "name": "inbox-king-pro",
-  "version": "1.2.0",
+  "name": "inbox-vanguard",
+  "version": "2.0.0",
   "type": "module",
-  "main": "server.js",
   "dependencies": {
     "express": "^4.19.2",
     "nodemailer": "^6.9.9"
