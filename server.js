@@ -2,95 +2,134 @@ import express from "express";
 import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
-import crypto from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "80kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-const HOURLY_LIMIT = 28;
-const PARALLEL = 3;
-const DELAY_MS = 120;
-let stats = {};
-setInterval(() => { stats = {}; }, 3600000);
-
-// 🛡️ ANTI-SPAM SPINNER: Risky words ko automatically safe synonyms se badal deta hai
-const bypassFilter = (text) => {
-    const replacements = {
-        "technical error": ["indexing glitch", "display anomaly", "backend discrepancy", "configuration gap"],
-        "blocks": ["restricts", "limits", "impacts", "hinders"],
-        "Google": ["search engine results", "online visibility", "organic search", "web presence"],
-        "screen shot": ["visual report", "capture", "proof", "detailed image"]
-    };
-    
-    let spun = text;
-    for (const [key, values] of Object.entries(replacements)) {
-        const regex = new RegExp(key, "gi");
-        spun = spun.replace(regex, () => values[Math.floor(Math.random() * values.length)]);
-    }
-
-    // Har mail ke end mein invisible random code (Gmail pattern todne ke liye)
-    const ghostID = crypto.randomBytes(10).toString('hex');
-    return `${spun} <div style="display:none; color:transparent; font-size:0px;">ID:${ghostID}</div>`;
-};
-
-async function deliverSafeBatch(transporter, mails) {
-    let count = 0;
-    for (let i = 0; i < mails.length; i += PARALLEL) {
-        const batch = mails.slice(i, i + PARALLEL);
-        const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
-        results.forEach(r => { if (r.status === "fulfilled") count++; });
-        
-        // Human-like sending delay
-        await new Promise(r => setTimeout(r, DELAY_MS + Math.random() * 100));
-    }
-    return count;
-}
-
-app.post("/send", async (req, res) => {
-    const { senderName, gmail, apppass, to, subject, message } = req.body;
-    
-    if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Missing fields ❌" });
-
-    if (!stats[gmail]) stats[gmail] = 0;
-    const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
-    
-    if (stats[gmail] + recipients.length > HOURLY_LIMIT) 
-        return res.json({ success: false, msg: "Limit (28/hr) reached ❌" });
-
-    // 🏆 PROFESSIONAL SMTP HANDSHAKE
-    const transporter = nodemailer.createTransport({
-        service: "gmail",
-        pool: true, // Reuses connections for higher trust
-        maxConnections: 3,
-        maxMessages: 28,
-        auth: { user: gmail, pass: apppass }
-    });
-
-    const mails = recipients.map(r => ({
-        from: `"${senderName || gmail}" <${gmail}>`,
-        to: r,
-        subject: bypassFilter(subject || "Important site update"),
-        html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #202124;">
-                ${bypassFilter(message).replace(/\n/g, '<br>')}
-               </div>`,
-        headers: { 
-            'X-Mailer': 'Microsoft Outlook 16.0',
-            'X-Priority': '3',
-            'Message-ID': `<${crypto.randomUUID()}@mail.gmail.com>`,
-            'X-Entity-ID': crypto.randomBytes(8).toString('hex')
-        }
-    }));
-
-    try {
-        const sentCount = await deliverSafeBatch(transporter, mails);
-        stats[gmail] += sentCount;
-        res.json({ success: true, sent: sentCount });
-    } catch (e) {
-        res.json({ success: false, msg: "SMTP Auth Failed ❌" });
-    }
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-app.listen(3000, () => console.log("🚀 Safe Engine Online at Port 3000"));
+/* ================= SAFE CONFIG ================= */
+
+const LIMIT_4H = 28;
+const RESET_TIME = 4 * 60 * 60 * 1000;
+const DELAY_MS = 140;         // natural human pace
+const MAX_FAIL = 2;           // stop early to protect reputation
+
+let sentCount = {};
+let failCount = {};
+
+/* Reset every 4 hours */
+setInterval(() => {
+  sentCount = {};
+  failCount = {};
+  console.log("4-hour window reset");
+}, RESET_TIME);
+
+/* ================= HELPERS ================= */
+
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function delay() {
+  return new Promise(r =>
+    setTimeout(r, DELAY_MS + Math.floor(Math.random() * 60))
+  );
+}
+
+async function sendOneByOne(transporter, mails, gmail) {
+  let sent = 0;
+
+  for (const mail of mails) {
+    try {
+      await transporter.sendMail(mail);
+
+      sent++;
+      sentCount[gmail] = (sentCount[gmail] || 0) + 1;
+      failCount[gmail] = 0;
+
+    } catch (err) {
+      failCount[gmail] = (failCount[gmail] || 0) + 1;
+
+      // Early stop to protect account reputation
+      if (failCount[gmail] >= MAX_FAIL) break;
+    }
+
+    await delay();
+  }
+
+  return sent;
+}
+
+/* ================= SEND ROUTE ================= */
+
+app.post("/send", async (req, res) => {
+  const { senderName, gmail, apppass, to, subject, message } = req.body;
+
+  if (!gmail || !apppass || !to || !subject || !message)
+    return res.json({ success:false, msg:"Missing fields" });
+
+  if (!emailRegex.test(gmail))
+    return res.json({ success:false, msg:"Invalid Gmail" });
+
+  sentCount[gmail] = sentCount[gmail] || 0;
+
+  if (sentCount[gmail] >= LIMIT_4H)
+    return res.json({
+      success:false,
+      msg:"28 email limit reached for this 4-hour window"
+    });
+
+  let recipients = to
+    .split(/,|\n/)
+    .map(r => r.trim())
+    .filter(r => emailRegex.test(r));
+
+  recipients = [...new Set(recipients)];
+
+  const remaining = LIMIT_4H - sentCount[gmail];
+
+  if (recipients.length > remaining)
+    return res.json({
+      success:false,
+      msg:`Only ${remaining} emails allowed in this window`
+    });
+
+  const transporter = nodemailer.createTransport({
+    service:"gmail",
+    auth:{ user:gmail, pass:apppass }
+  });
+
+  try { await transporter.verify(); }
+  catch {
+    return res.json({ success:false, msg:"Authentication failed" });
+  }
+
+  const mails = recipients.map(r => ({
+    from:`"${(senderName||"").trim()||gmail}" <${gmail}>`,
+    to:r,
+    subject:subject,     // unchanged
+    text:message,        // plain text only
+    replyTo:gmail
+  }));
+
+  const sent = await sendOneByOne(transporter, mails, gmail);
+
+  res.json({
+    success:true,
+    sent,
+    used:sentCount[gmail],
+    limit:LIMIT_4H
+  });
+});
+
+/* ================= START ================= */
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Inbox-safe mail server running on port", PORT);
+});
