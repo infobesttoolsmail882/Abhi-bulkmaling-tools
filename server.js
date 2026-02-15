@@ -11,102 +11,98 @@ const app = express();
 app.use(express.json({ limit: "150kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/* CONFIGURATION (Fixed for Stability) */
+// Aapki fixed limits
 const HOURLY_LIMIT = 28;
-const PARALLEL_BATCH = 3;
+const PARALLEL = 3;
 const DELAY_MS = 120; 
 
 let stats = {};
-setInterval(() => { stats = {}; }, 60 * 60 * 1000); // Reset every hour
+setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
-/* 🛡️ ANTI-SPAM LOGIC: Metadata Injection */
-const prepareInboxBody = (content) => {
-    // Unique fingerprint jo sirf server ko dikhta hai
-    const traceId = crypto.randomBytes(16).toString('hex');
+/* 🛡️ ULTRA-SAFE FINGERPRINTING ENGINE */
+const bypassFilters = (text) => {
+    // Zero-width characters (Invisible to humans, Unique to AI)
+    const zwc = ["\u200b", "\u200c", "\u200d", "\uFEFF"];
+    let uniqueTail = "";
+    for(let i=0; i<15; i++) {
+        uniqueTail += zwc[Math.floor(Math.random() * zwc.length)];
+    }
+    
+    // Original content maintained + Invisible uniqueness added
     return `
-    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333;">
-        ${content.replace(/\n/g, '<br>')}
-        <div style="margin-top:20px; padding-top:10px; border-top:1px solid #eee; font-size:10px; color:#aaa;">
-            Security Verified: ID-${traceId}
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #202124;">
+        ${text.replace(/\n/g, '<br>')}
+        <div style="display:none !important; visibility:hidden; mso-hide:all; font-size:0px;">
+            ${crypto.randomBytes(16).toString('hex')} ${uniqueTail}
         </div>
-        <div style="display:none; white-space:nowrap; font-size:0px; color:transparent;">${crypto.randomUUID()}</div>
     </div>`;
 };
 
-/* 🚀 HIGH-SPEED SECURE ENGINE */
-async function deliverInParallel(transporter, mailList) {
-    let delivered = 0;
-    for (let i = 0; i < mailList.length; i += PARALLEL_BATCH) {
-        const currentBatch = mailList.slice(i, i + PARALLEL_BATCH);
+async function secureBatchSend(transporter, mailList) {
+    let success = 0;
+    for (let i = 0; i < mailList.length; i += PARALLEL) {
+        const batch = mailList.slice(i, i + PARALLEL);
+        const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
         
-        // Parallel execution within batch
-        const tasks = currentBatch.map(mail => transporter.sendMail(mail));
-        const results = await Promise.allSettled(tasks);
+        results.forEach(res => { if (res.status === "fulfilled") success++; });
         
-        results.forEach(res => { if (res.status === "fulfilled") delivered++; });
-        
-        // Fast Human-Delay
-        await new Promise(r => setTimeout(r, DELAY_MS));
+        // Anti-Bot Delay (Human rhythm)
+        await new Promise(r => setTimeout(r, DELAY_MS + Math.random() * 50));
     }
-    return delivered;
+    return success;
 }
 
 app.post("/send", async (req, res) => {
     const { senderName, gmail, apppass, to, subject, message } = req.body;
 
-    // Validation
-    if (!gmail || !apppass || !to || !subject || !message) {
-        return res.json({ success: false, msg: "Required fields missing ❌" });
-    }
+    if (!gmail || !apppass || !to || !subject || !message)
+        return res.json({ success: false, msg: "Missing fields ❌" });
 
     if (!stats[gmail]) stats[gmail] = { count: 0 };
-    if (stats[gmail].count >= HOURLY_LIMIT) {
-        return res.json({ success: false, msg: `Limit (${HOURLY_LIMIT}) reached for this Gmail ❌` });
-    }
+    if (stats[gmail].count >= HOURLY_LIMIT)
+        return res.json({ success: false, msg: "Hourly limit reached ❌" });
 
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => emailPattern.test(r));
-    const quotaLeft = HOURLY_LIMIT - stats[gmail].count;
+    const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
+    const quota = HOURLY_LIMIT - stats[gmail].count;
 
-    if (recipients.length > quotaLeft) {
-        return res.json({ success: false, msg: `Quota Alert! You can only send ${quotaLeft} more.` });
-    }
+    if (recipients.length > quota)
+        return res.json({ success: false, msg: `Limit: Only ${quota} left.` });
 
-    // 🏆 PROFESSIONAL SMTP SETUP
+    // 🏆 LEGITIMATE SMTP HANDSHAKE
     const transporter = nodemailer.createTransport({
         service: "gmail",
-        pool: true, // Reuses the same login session (Inbox Secret)
+        pool: true, 
         maxConnections: 3,
         maxMessages: 28,
+        rateDelta: 2000,
+        rateLimit: 5,
         auth: { user: gmail, pass: apppass }
     });
 
     const mails = recipients.map(r => ({
         from: `"${senderName || gmail}" <${gmail}>`,
         to: r,
-        subject: subject,
-        html: prepareInboxBody(message),
-        // Trusted Corporate Headers
+        subject: `${subject} ${"\u200c".repeat(Math.floor(Math.random() * 5))}`,
+        html: bypassFilters(message),
         headers: {
             'X-Mailer': 'Microsoft Outlook 16.0',
-            'X-Priority': '3 (Normal)',
-            'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
-            'X-Entity-ID': crypto.randomBytes(8).toString('base64'),
-            'X-Auto-Response-Suppress': 'OOF, AutoReply'
+            'X-Priority': '3',
+            'Message-ID': `<${crypto.randomUUID()}@mail.gmail.com>`,
+            'X-Report-Abuse-To': `mailto:${gmail}`,
+            'Importance': 'normal'
         }
     }));
 
     try {
-        const finalSentCount = await deliverInParallel(transporter, mails);
-        stats[gmail].count += finalSentCount;
-        res.json({ success: true, sent: finalSentCount });
+        const count = await secureBatchSend(transporter, mails);
+        stats[gmail].count += count;
+        res.json({ success: true, sent: count });
     } catch (err) {
-        res.json({ success: false, msg: "SMTP Handshake Error ❌" });
+        res.json({ success: false, msg: "Connection Refused ❌" });
     }
 });
 
-// Serve Login as Home
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`⭐ Engine Started! http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Secure Engine Online: ${PORT}`));
