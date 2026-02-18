@@ -8,79 +8,89 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "150kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// --- Limits & Stats ---
 const HOURLY_LIMIT = 28;
-const PARALLEL_BATCH = 3;
-const DELAY_MS = 120;
+const PARALLEL = 3; 
+const DELAY_MS = 120; 
+
 let stats = {};
 setInterval(() => { stats = {}; }, 3600000);
 
-// --- Fix for "Cannot GET /" ---
-// Yeh line batati hai ki jab koi site khole toh login.html dikhao
+// Root Route fix for Render error
 app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "public", "login.html"));
+    res.sendFile(path.join(__dirname, "public", "launcher.html"));
 });
 
-// --- Inbox Guard: Invisible Randomization ---
-const prepareSafeBody = (text) => {
-    const ghostID = crypto.randomBytes(12).toString('hex');
-    return `<div style="font-family: Arial; color: #333;">
+/* 🛡️ INBOX PROTECTION: Dynamic DNA Injection */
+const injectTrustDNA = (text) => {
+    const ghostID = crypto.randomBytes(16).toString('hex');
+    // Invisible characters to break Gmail's content fingerprinting
+    const noise = "\u200b\u200c\u200d".repeat(Math.floor(Math.random() * 5));
+    return `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #202124;">
         ${text.replace(/\n/g, '<br>')}
-        <div style="display:none; visibility:hidden; font-size:0px;">ID:${ghostID}</div>
+        <div style="display:none; color:transparent; font-size:0px; opacity:0; mso-hide:all;">
+            Ref: ${ghostID} ${noise}
+        </div>
     </div>`;
 };
 
-// --- Secure Delivery Engine ---
-async function sendSafeParallel(transporter, mails) {
-    let sent = 0;
-    for (let i = 0; i < mails.length; i += PARALLEL_BATCH) {
-        const batch = mails.slice(i, i + PARALLEL_BATCH);
+async function deliverMails(transporter, mailQueue) {
+    let success = 0;
+    for (let i = 0; i < mailQueue.length; i += PARALLEL) {
+        const batch = mailQueue.slice(i, i + PARALLEL);
         const results = await Promise.allSettled(batch.map(m => transporter.sendMail(m)));
-        results.forEach(r => { if (r.status === "fulfilled") sent++; });
-        await new Promise(r => setTimeout(r, DELAY_MS + Math.random() * 50));
+        results.forEach(r => { if (r.status === "fulfilled") success++; });
+        
+        // Fast but human-like jitter
+        await new Promise(r => setTimeout(r, DELAY_MS + Math.random() * 80));
     }
-    return sent;
+    return success;
 }
 
 app.post("/send", async (req, res) => {
     const { senderName, gmail, apppass, to, subject, message } = req.body;
-    if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Missing fields" });
+    if (!gmail || !apppass || !to) return res.json({ success: false, msg: "Fill all fields ❌" });
 
     if (!stats[gmail]) stats[gmail] = 0;
     const recipients = to.split(/,|\n/).map(r => r.trim()).filter(r => r.includes("@"));
 
     if (stats[gmail] + recipients.length > HOURLY_LIMIT)
-        return res.json({ success: false, msg: `Limit reached (${HOURLY_LIMIT}/hr)` });
+        return res.json({ success: false, msg: `Limit reached (${HOURLY_LIMIT}/hr) ❌` });
 
+    // 🏆 HIGH-TRUST SMTP POOLING (Essential for Inbox)
     const transporter = nodemailer.createTransport({
         service: "gmail",
-        pool: true, // Connection reuse for high trust
+        pool: true, 
+        maxConnections: 3,
+        maxMessages: 28,
         auth: { user: gmail, pass: apppass }
     });
 
     const mails = recipients.map(r => ({
         from: `"${senderName || gmail}" <${gmail}>`,
         to: r,
-        subject: `${subject} \u200c`,
-        html: prepareSafeBody(message),
+        subject: `${subject} \u200c`, // Invisible subject variation
+        html: injectTrustDNA(message),
         headers: {
             'X-Mailer': 'Microsoft Outlook 16.0',
-            'Message-ID': `<${crypto.randomUUID()}@gmail.com>`,
-            'X-Entity-ID': crypto.randomBytes(10).toString('hex')
+            'X-Priority': '3',
+            'Message-ID': `<${crypto.randomUUID()}@mail.gmail.com>`,
+            'X-Entity-Ref-ID': crypto.randomBytes(10).toString('hex'),
+            'Importance': 'normal'
         }
     }));
 
     try {
-        const count = await sendSafeParallel(transporter, mails);
+        const count = await deliverMails(transporter, mails);
         stats[gmail] += count;
         res.json({ success: true, sent: count });
     } catch (e) {
-        res.json({ success: false, msg: "SMTP Error" });
+        res.json({ success: false, msg: "SMTP Handshake Failed ❌" });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
+app.listen(PORT, () => console.log(`⭐ Real Inbox Engine running on port ${PORT}`));
