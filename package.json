@@ -1,7 +1,8 @@
 {
-  "name": "safe-mail-sender",
+  "name": "safe-mail-sender-pro",
   "version": "1.0.0",
   "type": "module",
+  "description": "High Inbox Rate Mailer",
   "dependencies": {
     "express": "^4.19.2",
     "nodemailer": "^6.9.9"
