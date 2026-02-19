@@ -60,4 +60,78 @@ async function sendSafely(transporter, mails) {
     await new Promise(r => setTimeout(r, DELAY_MS));
   }
 
-  return sen
+  return sent;
+}
+
+/* LOGIN API */
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === PANEL_USER && password === PANEL_PASS) {
+    return res.json({ success: true, token: PANEL_TOKEN });
+  }
+
+  return res.json({ success: false });
+});
+
+/* SEND API */
+app.post("/send", async (req, res) => {
+
+  if (req.headers["x-auth-token"] !== PANEL_TOKEN)
+    return res.json({ success: false, msg: "Unauthorized ❌" });
+
+  const { senderName, gmail, apppass, to, subject, message } = req.body;
+
+  if (!gmail || !apppass || !to || !subject || !message)
+    return res.json({ success: false, msg: "Missing fields ❌" });
+
+  if (!emailRegex.test(gmail))
+    return res.json({ success: false, msg: "Invalid Gmail ❌" });
+
+  if (!stats[gmail]) stats[gmail] = { count: 0 };
+
+  if (stats[gmail].count >= HOURLY_LIMIT)
+    return res.json({ success: false, msg: "Hourly limit reached ❌" });
+
+  const recipients = to
+    .split(/,|\n/)
+    .map(r => r.trim())
+    .filter(r => emailRegex.test(r));
+
+  if (recipients.length === 0)
+    return res.json({ success: false, msg: "No valid recipients ❌" });
+
+  const remaining = HOURLY_LIMIT - stats[gmail].count;
+
+  if (recipients.length > remaining)
+    return res.json({ success: false, msg: "Limit full ❌" });
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: gmail, pass: apppass }
+  });
+
+  try {
+    await transporter.verify();
+  } catch {
+    return res.json({ success: false, msg: "Gmail login failed ❌" });
+  }
+
+  const mails = recipients.map(r => ({
+    from: `"${senderName || gmail}" <${gmail}>`,
+    to: r,
+    subject: cleanSubject(subject),
+    text: cleanText(message),
+    replyTo: gmail
+  }));
+
+  const sent = await sendSafely(transporter, mails);
+
+  stats[gmail].count += sent;
+
+  res.json({ success: true, sent });
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("✅ Server Running");
+});
