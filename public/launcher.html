@@ -1,13 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Secure Mail Console</title>
+  <title>Mail Console</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
 <div class="page">
   <div class="card">
-    <h2 class="title">Secure Mail Console</h2>
+    <h2 class="title">Mail Sender</h2>
 
     <div class="form-grid">
       <input id="senderName" placeholder="Sender Name">
@@ -15,16 +16,17 @@
       <input id="apppass" type="password" placeholder="App Password">
       <input id="subject" placeholder="Email Subject">
       <textarea id="message" placeholder="Message"></textarea>
-      <textarea id="to" placeholder="Recipients"></textarea>
+      <textarea id="to" placeholder="Recipients (comma/new line)"></textarea>
     </div>
 
     <div class="btn-row">
       <button id="sendBtn">Send All</button>
-      <button id="logoutBtn">Logout</button>
+      <button id="logoutBtn">Logout (Double Click)</button>
     </div>
 
   </div>
 </div>
+
 <script src="script.js"></script>
 </body>
 </html>
