@@ -1,16 +1,42 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Secure Login</title>
-  <link rel="stylesheet" href="style.css">
+<title>Secure Login</title>
+<style>
+body { background:#cfd8e3; display:flex; justify-content:center; align-items:center; height:100vh; font-family:sans-serif; }
+.card { background:white; padding:40px; border-radius:12px; width:350px; text-align:center; }
+input { width:100%; padding:12px; margin:10px 0; border-radius:8px; border:1px solid #ccc; }
+button { width:100%; padding:12px; border:none; border-radius:8px; background:#3b82f6; color:white; font-size:16px; cursor:pointer; }
+</style>
 </head>
 <body>
-  <div class="card">
-    <h2>Secure Access</h2>
-    <input id="username" placeholder="Username">
-    <input id="password" type="password" placeholder="Password">
-    <button onclick="login()">Login</button>
-  </div>
-  <script src="script.js"></script>
+
+<div class="card">
+<h2>Secure Access</h2>
+<input id="username" placeholder="Username">
+<input id="password" type="password" placeholder="Password">
+<button onclick="login()">Login</button>
+</div>
+
+<script>
+async function login(){
+  const res = await fetch("/login",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      username:username.value,
+      password:password.value
+    })
+  });
+  const data = await res.json();
+  if(data.token){
+    localStorage.setItem("token",data.token);
+    window.location="launcher.html";
+  }else{
+    alert("Login Failed");
+  }
+}
+</script>
+
 </body>
 </html>
