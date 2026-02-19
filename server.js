@@ -1,22 +1,19 @@
-const express = require("express");
-const path = require("path");
-const session = require("express-session");
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+import nodemailer from "nodemailer";
 
 const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use(session({
-  secret: "secureSecretKey123",
-  resave: false,
-  saveUninitialized: false
-}));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 app.use(express.static(path.join(__dirname, "public")));
 
 
-// 🔐 HARDCODED LOGIN
+// 🔐 SIMPLE LOGIN (NO .env)
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "12345";
 
@@ -24,7 +21,6 @@ app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
   if (username === ADMIN_USER && password === ADMIN_PASS) {
-    req.session.user = username;
     return res.json({ success: true });
   }
 
@@ -32,18 +28,52 @@ app.post("/login", (req, res) => {
 });
 
 
-app.get("/launcher.html", (req, res) => {
-  if (!req.session.user) {
-    return res.redirect("/login.html");
+// 📧 SEND MAIL ROUTE
+app.post("/send", async (req, res) => {
+  try {
+    const { senderName, gmail, apppass, subject, message, to } = req.body;
+
+    if (!gmail || !apppass || !subject || !message || !to) {
+      return res.json({ success: false, msg: "All fields required" });
+    }
+
+    const recipients = to
+      .split(/[\n,]+/)
+      .map(e => e.trim())
+      .filter(e => e);
+
+    if (recipients.length === 0) {
+      return res.json({ success: false, msg: "No recipients found" });
+    }
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: gmail,
+        pass: apppass
+      }
+    });
+
+    let sentCount = 0;
+
+    for (let email of recipients) {
+      await transporter.sendMail({
+        from: `"${senderName}" <${gmail}>`,
+        to: email,
+        subject: subject,
+        text: message
+      });
+      sentCount++;
+    }
+
+    res.json({ success: true, sent: sentCount });
+
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, msg: "Server error" });
   }
-  res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
-app.get("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.redirect("/login.html");
-  });
-});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
