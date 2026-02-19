@@ -4,18 +4,31 @@ import { fileURLToPath } from "url";
 import nodemailer from "nodemailer";
 
 const app = express();
+const PORT = 3000;
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Static folder
 app.use(express.static(path.join(__dirname, "public")));
 
 
-// 🔐 SIMPLE LOGIN (NO .env)
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "12345";
+// =============================
+// HOME ROUTE (Fix Cannot GET /)
+// =============================
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+
+// =============================
+// LOGIN SYSTEM
+// =============================
+const ADMIN_USER = "2026@#";
+const ADMIN_PASS = "2026@#";
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
@@ -28,23 +41,21 @@ app.post("/login", (req, res) => {
 });
 
 
-// 📧 SEND MAIL ROUTE
+// =============================
+// SEND MAIL
+// =============================
 app.post("/send", async (req, res) => {
   try {
     const { senderName, gmail, apppass, subject, message, to } = req.body;
 
-    if (!gmail || !apppass || !subject || !message || !to) {
-      return res.json({ success: false, msg: "All fields required" });
+    if (!gmail || !apppass || !to) {
+      return res.json({ success: false, msg: "Missing fields" });
     }
 
     const recipients = to
       .split(/[\n,]+/)
       .map(e => e.trim())
       .filter(e => e);
-
-    if (recipients.length === 0) {
-      return res.json({ success: false, msg: "No recipients found" });
-    }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
@@ -54,7 +65,7 @@ app.post("/send", async (req, res) => {
       }
     });
 
-    let sentCount = 0;
+    let sent = 0;
 
     for (let email of recipients) {
       await transporter.sendMail({
@@ -63,18 +74,19 @@ app.post("/send", async (req, res) => {
         subject: subject,
         text: message
       });
-      sentCount++;
+      sent++;
     }
 
-    res.json({ success: true, sent: sentCount });
+    res.json({ success: true, sent });
 
   } catch (err) {
-    console.error(err);
+    console.log(err);
     res.json({ success: false, msg: "Server error" });
   }
 });
 
 
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
+// =============================
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
