@@ -1,105 +1,50 @@
-/* ================= LOGIN ================= */
+let sending = false;
 
-const loginBtn = document.getElementById("loginBtn");
-const usernameInput = document.getElementById("username");
-const passwordInput = document.getElementById("password");
+const sendBtn = document.getElementById("sendBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 
-if (loginBtn) {
-  loginBtn.onclick = async () => {
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value.trim();
+sendBtn.onclick = () => {
+  if (!sending) sendMail();
+};
 
-    if (!username || !password) {
-      alert("Please enter login details");
-      return;
-    }
+// 🔥 DOUBLE CLICK LOGOUT
+logoutBtn.ondblclick = () => {
+  window.location.href = "/";
+};
 
-    const res = await fetch("/login", {
+async function sendMail() {
+  sending = true;
+  sendBtn.disabled = true;
+  sendBtn.innerText = "Sending...";
+
+  try {
+    const res = await fetch("/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({
+        senderName: senderName.value.trim(),
+        gmail: gmail.value.trim(),
+        apppass: apppass.value.trim(),
+        subject: subject.value.trim(),
+        message: message.value.trim(),
+        to: to.value.trim()
+      })
     });
 
     const data = await res.json();
 
-    if (data.success) {
-      location.href = "/launcher";
-    } else {
-      alert(data.message || "Login Failed ❌");
-    }
-  };
-}
-
-/* ================= SEND MAIL ================= */
-
-const sendBtn = document.getElementById("sendBtn");
-
-if (sendBtn) {
-  sendBtn.onclick = async () => {
-    const senderName = document.getElementById("senderName").value.trim();
-    const gmail = document.getElementById("gmail").value.trim();
-    const apppass = document.getElementById("apppass").value.trim();
-    const subject = document.getElementById("subject").value.trim();
-    const message = document.getElementById("message").value.trim();
-    const to = document.getElementById("to").value.trim();
-
-    if (!gmail || !apppass || !to) {
-      alert("Required fields missing");
+    if (!data.success) {
+      alert(data.msg || "Sending failed ❌");
       return;
     }
 
-    sendBtn.disabled = true;
-    sendBtn.innerText = "Sending...";
+    alert("Emails Sent: " + data.sent);
 
-    try {
-      const res = await fetch("/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          senderName,
-          gmail,
-          apppass,
-          subject,
-          message,
-          to
-        })
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        alert("Emails sent successfully ✅ (" + data.sent + ")");
-      } else {
-        alert(data.message || "Failed to send");
-      }
-
-    } catch (err) {
-      alert("Server Error");
-    }
-
+  } catch {
+    alert("Server error ❌");
+  } finally {
+    sending = false;
     sendBtn.disabled = false;
-    sendBtn.innerText = "Send";
-  };
-}
-
-/* ================= DOUBLE CLICK LOGOUT ================= */
-
-const logoutBtn = document.getElementById("logoutBtn");
-
-if (logoutBtn) {
-
-  // Single click warning
-  logoutBtn.onclick = () => {
-    alert("Double click to logout 🔒");
-  };
-
-  // Double click actual logout
-  logoutBtn.ondblclick = async () => {
-    logoutBtn.innerText = "Logging out...";
-    logoutBtn.disabled = true;
-
-    await fetch("/logout", { method: "POST" });
-
-    location.href = "/";
-  };
+    sendBtn.innerText = "Send All";
+  }
 }
