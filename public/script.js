@@ -1,47 +1,53 @@
-// Auth check on launcher
-if (window.location.pathname.includes("launcher.html")) {
-  fetch("/check-auth")
-    .then(res => res.json())
-    .then(data => {
-      if (!data.authenticated) {
-        window.location.href = "/login.html";
-      }
-    });
-}
+if (!sessionStorage.getItem("auth")) location.href = "/login.html";
 
-function login() {
-  const username = document.getElementById("username").value.trim();
-  const password = document.getElementById("password").value.trim();
-  const error = document.getElementById("error");
+let sending = false;
 
-  error.innerText = "";
+const sendBtn = document.getElementById("sendBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 
-  if (!username || !password) {
-    error.innerText = "All fields required";
-    return;
+sendBtn.onclick = () => { if (!sending) sendMail(); };
+
+logoutBtn.ondblclick = () => {
+  if (!sending) {
+    sessionStorage.clear();
+    location.href = "/login.html";
   }
+};
 
-  fetch("/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password })
-  })
-  .then(res => res.json())
-  .then(data => {
-    if (data.success) {
-      window.location.href = "/launcher.html";
-    } else {
-      error.innerText = data.message || "Invalid credentials";
-    }
-  })
-  .catch(() => {
-    error.innerText = "Server error";
-  });
-}
+async function sendMail() {
+  sending = true;
+  sendBtn.disabled = true;
+  sendBtn.innerText = "Sending…";
 
-function logout() {
-  fetch("/logout")
-    .then(() => {
-      window.location.href = "/login.html";
+  try {
+    const res = await fetch("/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        senderName: senderName.value.trim(),
+        gmail: gmail.value.trim(),
+        apppass: apppass.value.trim(),
+        subject: subject.value.trim(),
+        message: message.value.trim(),
+        to: to.value.trim()
+      })
     });
+
+    const data = await res.json();
+
+    if (!data.success) {
+      alert(data.msg || "Sending failed ❌");
+      return;
+    }
+
+    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
+
+  } catch (err) {
+    alert("Server error ❌");
+  } finally {
+    // 🔥 ALWAYS reset button — success OR error
+    sending = false;
+    sendBtn.disabled = false;
+    sendBtn.innerText = "Send All";
+  }
 }
