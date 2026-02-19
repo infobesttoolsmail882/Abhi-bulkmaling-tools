@@ -5,23 +5,19 @@ const nodemailer = require("nodemailer");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-/* ================= BASIC CONFIG ================= */
-
+/* ========== MIDDLEWARE ========== */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-/* ================= STATIC FILES ================= */
-
+/* ========== STATIC FILES ========== */
 app.use(express.static(path.join(__dirname, "public")));
 
-/* ================= ROOT FIX ================= */
-
+/* ========== ROOT FIX ========== */
 app.get("/", (req, res) => {
-  res.redirect("/login.html");
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* ================= SIMPLE LOGIN ================= */
-
+/* ========== LOGIN API ========== */
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
@@ -32,18 +28,10 @@ app.post("/login", (req, res) => {
   res.json({ success: false });
 });
 
-/* ================= SEND MAIL ================= */
-
+/* ========== SEND MAIL API ========== */
 app.post("/send", async (req, res) => {
   try {
-    const {
-      senderName,
-      gmail,
-      apppass,
-      subject,
-      message,
-      to
-    } = req.body;
+    const { senderName, gmail, apppass, subject, message, to } = req.body;
 
     if (!gmail || !apppass || !subject || !message || !to) {
       return res.json({ success: false, msg: "All fields required" });
@@ -73,19 +61,15 @@ app.post("/send", async (req, res) => {
       text: message
     });
 
-    res.json({
-      success: true,
-      sent: recipients.length
-    });
+    res.json({ success: true, sent: recipients.length });
 
-  } catch (error) {
-    console.error("Mail Error:", error);
-    res.json({ success: false, msg: "Server error" });
+  } catch (err) {
+    console.error("Mail Error:", err);
+    res.status(500).json({ success: false, msg: "Server error" });
   }
 });
 
-/* ================= START SERVER ================= */
-
+/* ========== START SERVER ========== */
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
