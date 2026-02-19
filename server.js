@@ -4,18 +4,21 @@ import path from "path";
 import { fileURLToPath } from "url";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import dotenv from "dotenv";
 
-dotenv.config();
+/* ================= SERVER CONFIG ================= */
+
+const PANEL_USER = "admin";
+const PANEL_PASS = "strongpassword123";
+const PANEL_TOKEN = "secure_token_2026_internal";
+
+/* ================= INIT ================= */
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 
-/* ================= SECURITY ================= */
 app.use(helmet());
-
 app.use(express.json({ limit: "50kb" }));
 
 const limiter = rateLimit({
@@ -24,7 +27,6 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-/* ================= STATIC ================= */
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
@@ -32,6 +34,7 @@ app.get("/", (req, res) => {
 });
 
 /* ================= SAME SPEED SETTINGS ================= */
+
 const HOURLY_LIMIT = 28;
 const PARALLEL = 3;
 const DELAY_MS = 120;
@@ -40,6 +43,7 @@ let stats = {};
 setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
 /* ================= HELPERS ================= */
+
 const cleanText = t =>
   (t || "").replace(/\r\n/g, "\n").trim().slice(0, 4000);
 
@@ -48,7 +52,8 @@ const cleanSubject = s =>
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/* ================= CONTROLLED PARALLEL SEND ================= */
+/* ================= SAFE PARALLEL SEND ================= */
+
 async function sendSafely(transporter, mails) {
   let sent = 0;
 
@@ -69,24 +74,23 @@ async function sendSafely(transporter, mails) {
   return sent;
 }
 
-/* ================= LOGIN ROUTE ================= */
+/* ================= LOGIN ================= */
+
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
-  if (
-    username === process.env.PANEL_USER &&
-    password === process.env.PANEL_PASS
-  ) {
-    return res.json({ success: true, token: process.env.PANEL_TOKEN });
+  if (username === PANEL_USER && password === PANEL_PASS) {
+    return res.json({ success: true, token: PANEL_TOKEN });
   }
 
   return res.json({ success: false });
 });
 
-/* ================= SEND ROUTE ================= */
+/* ================= SEND ================= */
+
 app.post("/send", async (req, res) => {
 
-  if (req.headers["x-auth-token"] !== process.env.PANEL_TOKEN)
+  if (req.headers["x-auth-token"] !== PANEL_TOKEN)
     return res.json({ success: false, msg: "Unauthorized ❌" });
 
   const { senderName, gmail, apppass, to, subject, message } = req.body;
@@ -135,7 +139,6 @@ app.post("/send", async (req, res) => {
   }));
 
   const sent = await sendSafely(transporter, mails);
-
   stats[gmail].count += sent;
 
   res.json({ success: true, sent });
