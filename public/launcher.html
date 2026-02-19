@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Secure Mail Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="card large">
+    <h2>Secure Mail Console</h2>
+
+    <input id="senderName" placeholder="Sender Name">
+    <input id="email" placeholder="Your Gmail">
+    <input id="appPassword" type="password" placeholder="App Password">
+    <input id="subject" placeholder="Email Subject">
+
+    <textarea id="message" placeholder="Message Body"></textarea>
+    <textarea id="recipients" placeholder="Recipients (comma / new line)"></textarea>
+
+    <button onclick="sendMail()">Send All</button>
+    <button onclick="logout()">Logout</button>
+
+    <p id="status"></p>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
