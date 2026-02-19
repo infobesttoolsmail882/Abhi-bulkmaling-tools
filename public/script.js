@@ -1,10 +1,10 @@
-// Check auth when launcher loads
+// Auth check on launcher
 if (window.location.pathname.includes("launcher.html")) {
   fetch("/check-auth")
     .then(res => res.json())
     .then(data => {
       if (!data.authenticated) {
-        window.location.href = "login.html";
+        window.location.href = "/login.html";
       }
     });
 }
@@ -23,27 +23,25 @@ function login() {
 
   fetch("/login", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
   })
   .then(res => res.json())
   .then(data => {
     if (data.success) {
-      window.location.href = "launcher.html";
+      window.location.href = "/launcher.html";
     } else {
-      error.innerText = data.message || "Invalid Credentials";
+      error.innerText = data.message || "Invalid credentials";
     }
   })
   .catch(() => {
-    error.innerText = "Server Error";
+    error.innerText = "Server error";
   });
 }
 
 function logout() {
   fetch("/logout")
     .then(() => {
-      window.location.href = "login.html";
+      window.location.href = "/login.html";
     });
 }
