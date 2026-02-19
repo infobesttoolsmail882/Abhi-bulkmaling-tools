@@ -8,30 +8,38 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+const PORT = process.env.PORT || 3000;
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static("public"));
 
-const DAILY_LIMIT = 50;        // 🔒 Safe limit
-const DELAY_MS = 8000;         // 🔒 8 sec delay
+// Serve public folder properly
+app.use(express.static(path.join(__dirname, "public")));
 
-let sentToday = 0;
+// 🔹 ROOT ROUTE FIX
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+const LIMIT = 30;        // 🔒 Safe limit
+const DELAY = 10000;     // 🔒 10 sec delay
 
 app.post("/send", async (req, res) => {
   try {
-    if (sentToday >= DAILY_LIMIT) {
-      return res.json({ success: false, message: "Daily limit reached." });
-    }
 
     const { email, appPassword, subject, message, recipients } = req.body;
+
+    if (!email || !appPassword) {
+      return res.json({ success: false, message: "Email & App Password required" });
+    }
 
     const list = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
       .filter(r => r);
 
-    if (list.length === 0) {
-      return res.json({ success: false, message: "No recipients found." });
+    if (list.length > LIMIT) {
+      return res.json({ success: false, message: `Limit is ${LIMIT} emails per run.` });
     }
 
     const transporter = nodemailer.createTransport({
@@ -42,10 +50,9 @@ app.post("/send", async (req, res) => {
       }
     });
 
-    let count = 0;
+    let sent = 0;
 
     for (let to of list) {
-      if (sentToday >= DAILY_LIMIT) break;
 
       await transporter.sendMail({
         from: email,
@@ -54,19 +61,18 @@ app.post("/send", async (req, res) => {
         text: message
       });
 
-      sentToday++;
-      count++;
+      sent++;
 
-      await new Promise(r => setTimeout(r, DELAY_MS));
+      await new Promise(r => setTimeout(r, DELAY));
     }
 
-    res.json({ success: true, message: `Sent ${count} emails safely.` });
+    res.json({ success: true, message: `Safely sent ${sent} emails.` });
 
   } catch (err) {
     res.json({ success: false, message: err.message });
   }
 });
 
-app.listen(3000, () => {
-  console.log("Safe Mail Console running on port 3000");
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
