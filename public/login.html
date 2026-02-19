@@ -13,13 +13,20 @@
   </div>
 
 <script>
-function login() {
-  if (uid.value.trim() === "@#2026" && upass.value.trim() === "@#2026") {
-    sessionStorage.setItem("auth","ok");
-    location.href = "/launcher.html";
-  } else {
-    alert("Invalid Login ❌");
-  }
+async function login() {
+  const username = uid.value.trim();
+  const password = upass.value.trim();
+
+  const res = await fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password })
+  });
+
+  const data = await res.json();
+
+  if (data.success) location.href = "/launcher";
+  else alert("Invalid Login ❌");
 }
 </script>
 </body>
