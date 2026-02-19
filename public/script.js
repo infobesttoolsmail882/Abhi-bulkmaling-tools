@@ -1,48 +1,36 @@
-let sending = false;
-
 const sendBtn = document.getElementById("sendBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 
-sendBtn.onclick = () => {
-  if (!sending) sendMail();
-};
-
-logoutBtn.onclick = () => {
-  location.href = "/login.html";
-};
-
-async function sendMail() {
-  sending = true;
+sendBtn.onclick = async () => {
   sendBtn.disabled = true;
   sendBtn.innerText = "Sending...";
 
-  try {
-    const res = await fetch("/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        senderName: senderName.value.trim(),
-        gmail: gmail.value.trim(),
-        apppass: apppass.value.trim(),
-        subject: subject.value.trim(),
-        message: message.value.trim(),
-        to: to.value.trim()
-      })
-    });
+  const res = await fetch("/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      senderName: senderName.value,
+      gmail: gmail.value,
+      apppass: apppass.value,
+      subject: subject.value,
+      message: message.value,
+      to: to.value
+    })
+  });
 
-    const data = await res.json();
+  const data = await res.json();
 
-    if (!data.success) {
-      alert(data.msg || "Sending failed ❌");
-    } else {
-      alert(`Sent: ${data.sent} emails ✅`);
-    }
-
-  } catch {
-    alert("Server error ❌");
+  if (data.success) {
+    alert("Sent: " + data.sent);
+  } else {
+    alert(data.message);
   }
 
-  sending = false;
   sendBtn.disabled = false;
   sendBtn.innerText = "Send All";
-}
+};
+
+logoutBtn.onclick = async () => {
+  await fetch("/logout", { method: "POST" });
+  location.href = "/";
+};
