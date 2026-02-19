@@ -1,115 +1,73 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const bodyParser = require('body-parser');
 const nodemailer = require('nodemailer');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const bcrypt = require('bcrypt');
+const validator = require('validator');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// 🔑 Hardcoded login
-const HARD_USERNAME = "!@#$%^&*())(*&^%$#@!@#$%^&*";
-const HARD_PASSWORD = "!@#$%^&*())(*&^%$#@!@#$%^&*";
+// ================= SECURITY MIDDLEWARE =================
 
-// ================= GLOBAL STATE =================
-
-// Per-sender hourly mail limit
-let mailLimits = {};
-
-// Global launcher lock
-let launcherLocked = false;
-
-// Session store
-const sessionStore = new session.MemoryStore();
-
-// ================= MIDDLEWARE =================
+app.use(helmet());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Session (1 hour life)
 app.use(session({
-  secret: 'bulk-mailer-secret',
+  secret: process.env.SESSION_SECRET,
   resave: false,
-  saveUninitialized: true,
-  store: sessionStore,
+  saveUninitialized: false,
   cookie: {
-    maxAge: 60 * 60 * 1000 // 1 hour
+    httpOnly: true,
+    secure: false,
+    maxAge: 60 * 60 * 1000
   }
 }));
 
-// ================= FULL RESET =================
+// Login brute force protection
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { success: false, message: "Too many login attempts" }
+});
 
-function fullServerReset() {
-  console.log("🔁 FULL LAUNCHER RESET");
-
-  launcherLocked = true;
-  mailLimits = {};
-
-  sessionStore.clear(() => {
-    console.log("🧹 All sessions cleared");
-  });
-
-  setTimeout(() => {
-    launcherLocked = false;
-    console.log("✅ Launcher unlocked for fresh login");
-  }, 2000);
-}
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ================= AUTH =================
 
-function requireAuth(req, res, next) {
-  if (launcherLocked) return res.redirect('/');
+async function requireAuth(req, res, next) {
   if (req.session.user) return next();
   return res.redirect('/');
 }
 
-// ================= ROUTES =================
+// ================= LOGIN =================
 
-// Login page
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-// Login
-app.post('/login', (req, res) => {
+app.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
-  if (launcherLocked) {
-    return res.json({
-      success: false,
-      message: "⛔ Launcher reset ho raha hai, thodi der baad login karo"
-    });
-  }
+  if (username !== process.env.ADMIN_USER)
+    return res.json({ success: false, message: "Invalid credentials" });
 
-  if (username === HARD_USERNAME && password === HARD_PASSWORD) {
-    req.session.user = username;
+  const match = await bcrypt.compare(password, process.env.ADMIN_PASS_HASH);
 
-    // ⏱️ Full reset after 1 hour
-    setTimeout(fullServerReset, 60 * 60 * 1000);
+  if (!match)
+    return res.json({ success: false, message: "Invalid credentials" });
 
-    return res.json({ success: true });
-  }
-
-  return res.json({ success: false, message: "❌ Invalid credentials" });
+  req.session.user = username;
+  return res.json({ success: true });
 });
 
-// Launcher page
-app.get('/launcher', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'launcher.html'));
-});
+// ================= SEND RATE LIMIT =================
 
-// ================= LOGOUT =================
-app.post('/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie('connect.sid');
-    return res.json({
-      success: true,
-      message: "✅ Logged out successfully"
-    });
-  });
+const sendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 25,
+  message: { success: false, message: "Hourly send limit reached" }
 });
 
 // ================= HELPERS =================
@@ -118,79 +76,63 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function sendBatch(transporter, mails, batchSize = 5) {
-  for (let i = 0; i < mails.length; i += batchSize) {
-    await Promise.allSettled(
-      mails.slice(i, i + batchSize).map(m => transporter.sendMail(m))
-    );
-    await delay(300);
+async function sendBatch(transporter, mails) {
+  for (const mail of mails) {
+    try {
+      await transporter.sendMail(mail);
+      await delay(800); // safe delay
+    } catch (err) {
+      console.error("Mail failed:", err.message);
+    }
   }
 }
 
 // ================= SEND MAIL =================
 
-app.post('/send', requireAuth, async (req, res) => {
+app.post('/send', requireAuth, sendLimiter, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } = req.body;
+    const { senderName, email, appPassword, recipients, subject, message } = req.body;
 
-    if (!email || !password || !recipients) {
-      return res.json({
-        success: false,
-        message: "Email, password and recipients required"
-      });
-    }
-
-    const now = Date.now();
-
-    // ⏱️ Hourly sender reset
-    if (!mailLimits[email] || now - mailLimits[email].startTime > 60 * 60 * 1000) {
-      mailLimits[email] = { count: 0, startTime: now };
-    }
+    if (!validator.isEmail(email))
+      return res.json({ success: false, message: "Invalid sender email" });
 
     const recipientList = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
-      .filter(Boolean);
+      .filter(r => validator.isEmail(r));
 
-    if (mailLimits[email].count + recipientList.length > 27) {
-      return res.json({
-        success: false,
-        message: `❌ Max 27 mails/hour | Remaining: ${27 - mailLimits[email].count}`
-      });
-    }
+    if (recipientList.length === 0)
+      return res.json({ success: false, message: "No valid recipients" });
+
+    if (recipientList.length > 25)
+      return res.json({ success: false, message: "Max 25 per hour allowed" });
 
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: { user: email, pass: password }
+      service: "gmail",
+      auth: { user: email, pass: appPassword }
     });
 
     const mails = recipientList.map(r => ({
-      from: `"${senderName || 'Anonymous'}" <${email}>`,
+      from: `"${senderName || 'Mailer'}" <${email}>`,
       to: r,
-
-      // ✅ Re removed + inbox friendly subject
-      subject: subject || "Quick Note",
-
-      text: (message || "")
+      subject: subject || "Notification",
+      text: message || ""
     }));
 
-    await sendBatch(transporter, mails, 5);
-
-    mailLimits[email].count += recipientList.length;
+    await sendBatch(transporter, mails);
 
     return res.json({
       success: true,
-      message: `✅ Sent ${recipientList.length} | Used ${mailLimits[email].count}/27`
+      message: `Sent ${recipientList.length} mails safely`
     });
 
   } catch (err) {
-    return res.json({ success: false, message: err.message });
+    return res.json({ success: false, message: "Error sending emails" });
   }
 });
 
 // ================= START =================
+
 app.listen(PORT, () => {
-  console.log(`🚀 Mail Launcher running on port ${PORT}`);
+  console.log(`🚀 Safe Mail Launcher running on port ${PORT}`);
 });
