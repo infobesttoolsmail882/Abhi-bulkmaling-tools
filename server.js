@@ -6,7 +6,7 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SECRET = "SUPER_SECRET_KEY_CHANGE_THIS";
+const SECRET = "CHANGE_THIS_SECRET_KEY";
 
 app.use(express.json());
 app.use(express.static("public"));
@@ -15,11 +15,13 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
+/* LOGIN FIXED: 2026 / 2026 */
 const USER = {
-  username: "admin",
-  password: bcrypt.hashSync("1234", 10)
+  username: "2026",
+  password: bcrypt.hashSync("2026", 10)
 };
 
+/* RATE LIMIT STORAGE */
 const rateStore = new Map();
 const MAX_PER_HOUR = 28;
 const ONE_HOUR = 60 * 60 * 1000;
@@ -50,28 +52,30 @@ app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
   if (username !== USER.username) {
-    return res.status(401).json({ error: "Invalid login" });
+    return res.status(401).json({ error: "Login Failed" });
   }
 
   const valid = await bcrypt.compare(password, USER.password);
+
   if (!valid) {
-    return res.status(401).json({ error: "Invalid login" });
+    return res.status(401).json({ error: "Login Failed" });
   }
 
   const token = jwt.sign({ username }, SECRET, { expiresIn: "2h" });
+
   res.json({ token });
 });
 
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: "No token" });
+  if (!header) return res.status(401).json({ error: "Unauthorized" });
 
   try {
     const token = header.split(" ")[1];
     jwt.verify(token, SECRET);
     next();
   } catch {
-    res.status(401).json({ error: "Invalid token" });
+    res.status(401).json({ error: "Unauthorized" });
   }
 }
 
@@ -97,10 +101,10 @@ app.post("/send", auth, async (req, res) => {
       text: message
     });
 
-    res.json({ success: "Email sent successfully" });
+    res.json({ success: "Email Sent Successfully" });
 
   } catch (err) {
-    res.status(500).json({ error: "Sending failed" });
+    res.status(500).json({ error: "Sending Failed" });
   }
 });
 
