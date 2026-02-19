@@ -5,15 +5,19 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
 <div class="page">
   <div class="card">
+
     <h2 class="title">📧 Secure Mail Console</h2>
 
     <div class="form-grid">
       <input id="senderName" placeholder="Sender Name">
-      <input id="gmail" placeholder="Your Gmail">
+      <input id="gmail" type="email" placeholder="Your Gmail">
+
       <input id="apppass" type="password" placeholder="App Password">
       <input id="subject" placeholder="Email Subject">
+
       <textarea id="message" placeholder="Message Body"></textarea>
       <textarea id="to" placeholder="Recipients (comma / new line)"></textarea>
     </div>
@@ -22,8 +26,12 @@
       <button id="sendBtn">Send All</button>
       <button id="logoutBtn">Logout</button>
     </div>
+
+    <div class="limit-text" id="countText">0</div>
+
   </div>
 </div>
+
 <script src="script.js"></script>
 </body>
 </html>
