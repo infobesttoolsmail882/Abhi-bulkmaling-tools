@@ -1,86 +1,103 @@
-import express from "express";
-import nodemailer from "nodemailer";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require("express");
+const nodemailer = require("nodemailer");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SECRET = "SUPER_SECRET_KEY_CHANGE_THIS";
 
-// ====== CONFIG ======
-const MAX_EMAIL_LIMIT = 20;       // max recipients per request
-const DELAY_BETWEEN_EMAILS = 2000; // 2 sec delay
-const LOGIN_USER = "2026";
-const LOGIN_PASS = "2026";
+app.use(express.json());
+app.use(express.static("public"));
 
-// ====== MIDDLEWARE ======
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, "public")));
+// ===== LOGIN USER (hashed password)
+const USER = {
+  username: "admin",
+  password: bcrypt.hashSync("1234", 10)
+};
 
-// ====== SIMPLE RATE LIMIT (Memory Based) ======
-let requestCount = 0;
-setInterval(() => {
-  requestCount = 0;
-}, 60000); // reset every 1 minute
+// ===== MEMORY RATE STORE (Per Email)
+const rateStore = new Map();
+const MAX_PER_HOUR = 28;
+const ONE_HOUR = 60 * 60 * 1000;
 
-app.use((req, res, next) => {
-  if (requestCount > 60) {
-    return res.status(429).json({ error: "Too many requests. Try later." });
-  }
-  requestCount++;
-  next();
-});
+function checkLimit(senderEmail) {
+  const now = Date.now();
 
-// ====== ROOT FIX ======
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
-});
-
-// ====== LOGIN ROUTE ======
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (username === LOGIN_USER && password === LOGIN_PASS) {
-    return res.json({ success: true });
+  if (!rateStore.has(senderEmail)) {
+    rateStore.set(senderEmail, {
+      count: 0,
+      startTime: now
+    });
   }
 
-  return res.status(401).json({ success: false, error: "Invalid login" });
-});
+  const data = rateStore.get(senderEmail);
 
-// ====== EMAIL VALIDATION ======
-function isValidEmail(email) {
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(email);
+  if (now - data.startTime > ONE_HOUR) {
+    data.count = 0;
+    data.startTime = now;
+  }
+
+  if (data.count >= MAX_PER_HOUR) {
+    return false;
+  }
+
+  data.count++;
+  return true;
 }
 
-// ====== SEND MAIL ROUTE ======
-app.post("/send", async (req, res) => {
-  try {
-    const { email, appPassword, subject, message, recipients, senderName } = req.body;
+// ===== API RATE LIMIT (IP Based)
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100
+});
+app.use("/send", apiLimiter);
 
-    if (!email || !appPassword || !subject || !message || !recipients) {
+// ===== LOGIN ROUTE
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  if (username !== USER.username) {
+    return res.status(401).json({ error: "Invalid login" });
+  }
+
+  const valid = await bcrypt.compare(password, USER.password);
+  if (!valid) {
+    return res.status(401).json({ error: "Invalid login" });
+  }
+
+  const token = jwt.sign({ username }, SECRET, { expiresIn: "2h" });
+  res.json({ token });
+});
+
+// ===== AUTH MIDDLEWARE
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ error: "No token" });
+
+  try {
+    const token = header.split(" ")[1];
+    jwt.verify(token, SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// ===== SEND EMAIL ROUTE
+app.post("/send", auth, async (req, res) => {
+  try {
+    const { senderName, email, appPassword, subject, message, recipients } = req.body;
+
+    if (!senderName || !email || !appPassword || !subject || !message || !recipients) {
       return res.status(400).json({ error: "All fields required" });
     }
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ error: "Invalid sender email" });
-    }
-
-    let list = recipients
-      .split(/[\n,]+/)
-      .map(r => r.trim())
-      .filter(r => isValidEmail(r));
-
-    if (list.length === 0) {
-      return res.status(400).json({ error: "No valid recipients found" });
-    }
-
-    if (list.length > MAX_EMAIL_LIMIT) {
-      return res.status(400).json({
-        error: `Max ${MAX_EMAIL_LIMIT} emails allowed per request`
+    if (!checkLimit(email)) {
+      return res.status(429).json({
+        error: "Hourly limit reached (28 emails). Try after 1 hour."
       });
     }
 
@@ -92,31 +109,20 @@ app.post("/send", async (req, res) => {
       }
     });
 
-    for (let recipient of list) {
-      await transporter.sendMail({
-        from: `"${senderName || "Mailer"}" <${email}>`,
-        to: recipient,
-        subject: subject,
-        text: message
-      });
-
-      await new Promise(resolve =>
-        setTimeout(resolve, DELAY_BETWEEN_EMAILS)
-      );
-    }
-
-    return res.json({
-      success: true,
-      sent: list.length
+    await transporter.sendMail({
+      from: `"${senderName}" <${email}>`,
+      to: recipients,
+      subject: subject,
+      text: message
     });
 
-  } catch (error) {
-    console.error("Mail Error:", error.message);
-    return res.status(500).json({ error: "Email sending failed" });
+    res.json({ success: "Email sent successfully" });
+
+  } catch (err) {
+    res.status(500).json({ error: "Sending failed" });
   }
 });
 
-// ====== START SERVER ======
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
