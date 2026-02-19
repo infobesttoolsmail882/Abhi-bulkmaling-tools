@@ -1,4 +1,5 @@
 async function sendEmails() {
+
   const email = document.getElementById("email").value;
   const appPassword = document.getElementById("password").value;
   const subject = document.getElementById("subject").value;
