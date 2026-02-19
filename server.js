@@ -6,48 +6,45 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SECRET = "CHANGE_THIS_SECRET_KEY";
+const SECRET = "SUPER_SECURE_SECRET_CHANGE_THIS";
 
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 app.use(express.static("public"));
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/login.html"));
-});
-
-/* LOGIN FIXED: 2026 / 2026 */
+/* LOGIN USER (2026 / 2026) */
 const USER = {
   username: "2026",
   password: bcrypt.hashSync("2026", 10)
 };
 
-/* RATE LIMIT STORAGE */
+/* RATE LIMIT SYSTEM */
 const rateStore = new Map();
 const MAX_PER_HOUR = 28;
 const ONE_HOUR = 60 * 60 * 1000;
 
-function checkLimit(email) {
+function checkLimit(email, totalToSend) {
   const now = Date.now();
 
   if (!rateStore.has(email)) {
-    rateStore.set(email, { count: 0, startTime: now });
+    rateStore.set(email, { count: 0, start: now });
   }
 
   const data = rateStore.get(email);
 
-  if (now - data.startTime > ONE_HOUR) {
+  if (now - data.start > ONE_HOUR) {
     data.count = 0;
-    data.startTime = now;
+    data.start = now;
   }
 
-  if (data.count >= MAX_PER_HOUR) {
+  if (data.count + totalToSend > MAX_PER_HOUR) {
     return false;
   }
 
-  data.count++;
+  data.count += totalToSend;
   return true;
 }
 
+/* LOGIN ROUTE */
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
@@ -56,16 +53,15 @@ app.post("/login", async (req, res) => {
   }
 
   const valid = await bcrypt.compare(password, USER.password);
-
   if (!valid) {
     return res.status(401).json({ error: "Login Failed" });
   }
 
   const token = jwt.sign({ username }, SECRET, { expiresIn: "2h" });
-
   res.json({ token });
 });
 
+/* AUTH MIDDLEWARE */
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: "Unauthorized" });
@@ -79,35 +75,61 @@ function auth(req, res, next) {
   }
 }
 
+/* FAST MAIL SENDER */
 app.post("/send", auth, async (req, res) => {
   try {
     const { senderName, email, appPassword, subject, message, recipients } = req.body;
 
-    if (!checkLimit(email)) {
+    if (!senderName || !email || !appPassword || !subject || !message || !recipients) {
+      return res.status(400).json({ error: "All fields required" });
+    }
+
+    const recipientList = recipients
+      .split(/[\n,]+/)
+      .map(r => r.trim())
+      .filter(r => r.length > 0);
+
+    if (recipientList.length === 0) {
+      return res.status(400).json({ error: "No valid recipients" });
+    }
+
+    if (!checkLimit(email, recipientList.length)) {
       return res.status(429).json({
-        error: "Limit reached (28 per hour)"
+        error: "Hourly limit (28) exceeded"
       });
     }
 
+    /* Reusable transporter */
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: email, pass: appPassword }
+      auth: {
+        user: email,
+        pass: appPassword
+      }
     });
 
-    await transporter.sendMail({
-      from: `"${senderName}" <${email}>`,
-      to: recipients,
-      subject,
-      text: message
-    });
+    /* Parallel sending for speed */
+    const sendPromises = recipientList.map(to =>
+      transporter.sendMail({
+        from: `"${senderName}" <${email}>`,
+        to,
+        subject,
+        text: message
+      })
+    );
 
-    res.json({ success: "Email Sent Successfully" });
+    await Promise.all(sendPromises);
+
+    res.json({
+      success: `Sent to ${recipientList.length} recipients successfully`
+    });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Sending Failed" });
   }
 });
 
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log("⚡ Fast Secure Server running on port " + PORT);
 });
