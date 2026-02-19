@@ -13,7 +13,7 @@
   </div>
 
 <script>
-document.getElementById("loginBtn").onclick = async function () {
+document.getElementById("loginBtn").onclick = async function() {
 
   const res = await fetch("/login", {
     method: "POST",
@@ -27,7 +27,7 @@ document.getElementById("loginBtn").onclick = async function () {
   const data = await res.json();
 
   if (data.success) {
-    sessionStorage.setItem("auth", data.token);
+    sessionStorage.setItem("auth","ok");
     window.location.href = "/launcher.html";
   } else {
     alert("Invalid Login ❌");
