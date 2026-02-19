@@ -1,52 +1,35 @@
-if (!sessionStorage.getItem("auth")) location.href = "/login.html";
-
 let sending = false;
-
-const sendBtn = document.getElementById("sendBtn");
-const logoutBtn = document.getElementById("logoutBtn");
 
 sendBtn.onclick = () => { if (!sending) sendMail(); };
 
-logoutBtn.ondblclick = () => {
-  if (!sending) {
-    sessionStorage.clear();
-    location.href = "/login.html";
-  }
+logoutBtn.onclick = async () => {
+  await fetch("/logout", { method: "POST" });
+  location.href = "/";
 };
 
 async function sendMail() {
   sending = true;
   sendBtn.disabled = true;
-  sendBtn.innerText = "Sending…";
+  sendBtn.innerText = "Sending...";
 
-  try {
-    const res = await fetch("/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        senderName: senderName.value.trim(),
-        gmail: gmail.value.trim(),
-        apppass: apppass.value.trim(),
-        subject: subject.value.trim(),
-        message: message.value.trim(),
-        to: to.value.trim()
-      })
-    });
+  const res = await fetch("/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      senderName: senderName.value.trim(),
+      email: gmail.value.trim(),
+      appPassword: apppass.value.trim(),
+      subject: subject.value.trim(),
+      message: message.value.trim(),
+      recipients: to.value.trim()
+    })
+  });
 
-    const data = await res.json();
+  const data = await res.json();
 
-    if (!data.success) {
-      alert(data.msg || "Sending failed ❌");
-      return;
-    }
+  alert(data.message || "Done");
 
-    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
-
-  } catch {
-    alert("Server error ❌");
-  } finally {
-    sending = false;
-    sendBtn.disabled = false;
-    sendBtn.innerText = "Send All";
-  }
+  sending = false;
+  sendBtn.disabled = false;
+  sendBtn.innerText = "Send All";
 }
