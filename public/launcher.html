@@ -1,27 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Secure Mail Console</title>
+<style>
+body { background:#cfd8e3; font-family:sans-serif; display:flex; justify-content:center; padding-top:60px; }
+.container { background:white; padding:40px; border-radius:14px; width:800px; }
+input, textarea { width:100%; padding:12px; margin:10px 0; border-radius:8px; border:1px solid #ccc; }
+.row { display:flex; gap:20px; }
+button { flex:1; padding:14px; border:none; border-radius:10px; background:#3b82f6; color:white; font-size:16px; cursor:pointer; }
+.counter { margin-top:10px; }
+.popup {
+ position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+ background:white; padding:30px; border-radius:10px; display:none;
+ box-shadow:0 0 10px rgba(0,0,0,0.3);
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+<h2>Secure Mail Console</h2>
+
+<div class="row">
+<input id="senderName" placeholder="Sender Name">
+<input id="email" placeholder="Your Gmail">
+</div>
+
+<div class="row">
+<input id="appPassword" type="password" placeholder="App Password">
+<input id="subject" placeholder="Email Subject">
+</div>
+
+<div class="row">
+<textarea id="message" placeholder="Message Body"></textarea>
+<textarea id="recipients" placeholder="Recipients (comma / new line)"></textarea>
+</div>
+
+<div class="row">
+<button onclick="sendMail()">Send All</button>
+<button ondblclick="logout()">Logout</button>
+</div>
+
+<div class="counter" id="counter">0/28</div>
+
+</div>
+
+<div class="popup" id="popup">
+<p id="popupText"></p>
+<button onclick="closePopup()">OK</button>
+</div>
+
 <script>
-async function sendMail() {
-  const response = await fetch("/send", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + localStorage.getItem("token")
+let count = 0;
+
+async function sendMail(){
+  const token = localStorage.getItem("token");
+  const res = await fetch("/send",{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "Authorization":"Bearer "+token
     },
-    body: JSON.stringify({
-      senderName: senderName.value,
-      email: email.value,
-      appPassword: appPassword.value,
-      subject: subject.value,
-      message: message.value,
-      recipients: recipients.value
+    body:JSON.stringify({
+      senderName:senderName.value,
+      email:email.value,
+      appPassword:appPassword.value,
+      subject:subject.value,
+      message:message.value,
+      recipients:recipients.value
     })
   });
 
-  const data = await response.json();
+  const data = await res.json();
 
-  if (data.success) {
-    alert("Email Sent Successfully");
-  } else {
-    alert(data.error);
+  if(data.success){
+    count++;
+    counter.innerText = count+"/28";
+    showPopup("Email Sent Successfully");
+  }else{
+    showPopup(data.error);
   }
 }
+
+function showPopup(text){
+  popupText.innerText = text;
+  popup.style.display="block";
+}
+
+function closePopup(){
+  popup.style.display="none";
+}
+
+function logout(){
+  localStorage.removeItem("token");
+  window.location="login.html";
+}
 </script>
+
+</body>
+</html>
