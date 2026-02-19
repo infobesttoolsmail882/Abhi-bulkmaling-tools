@@ -9,28 +9,28 @@
     <h2>Secure Access</h2>
     <input id="uid" placeholder="Username">
     <input id="upass" type="password" placeholder="Password">
-    <button id="loginBtn">Login</button>
+    <button onclick="login()">Login</button>
   </div>
 
 <script>
-document.getElementById("loginBtn").onclick = async () => {
-  const username = uid.value.trim();
-  const password = upass.value.trim();
-
+async function login() {
   const res = await fetch("/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({
+      username: uid.value.trim(),
+      password: upass.value.trim()
+    })
   });
 
   const data = await res.json();
 
   if (data.success) {
-    location.href = "/launcher";
+    location.href = "/launcher.html";
   } else {
-    alert(data.message);
+    alert("Invalid Login ❌");
   }
-};
+}
 </script>
 </body>
 </html>
