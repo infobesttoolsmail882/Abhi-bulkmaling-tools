@@ -14,17 +14,15 @@ logoutBtn.onclick = () => {
 };
 
 async function sendMail() {
+
   sending = true;
   sendBtn.disabled = true;
-  sendBtn.innerText = "Sending…";
+  sendBtn.innerText = "Sending...";
 
   try {
     const res = await fetch("/send", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-auth-token": sessionStorage.getItem("auth")
-      },
+      headers: {"Content-Type":"application/json"},
       body: JSON.stringify({
         senderName: senderName.value.trim(),
         gmail: gmail.value.trim(),
@@ -37,11 +35,10 @@ async function sendMail() {
 
     const data = await res.json();
 
-    if (!data.success) {
-      alert(data.msg || "Failed ❌");
-    } else {
+    if (!data.success)
+      alert(data.msg);
+    else
       alert("Emails Sent: " + data.sent);
-    }
 
   } catch {
     alert("Server error ❌");
