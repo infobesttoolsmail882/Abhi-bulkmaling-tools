@@ -1,22 +1,22 @@
-require('dotenv').config();
-const express = require('express');
-const session = require('express-session');
-const bodyParser = require('body-parser');
-const nodemailer = require('nodemailer');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const bcrypt = require('bcrypt');
-const validator = require('validator');
-const path = require('path');
+require("dotenv").config();
+const express = require("express");
+const session = require("express-session");
+const bodyParser = require("body-parser");
+const nodemailer = require("nodemailer");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const bcrypt = require("bcrypt");
+const validator = require("validator");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ================= SECURITY MIDDLEWARE =================
+// ================= SECURITY =================
 
 app.use(helmet());
+app.use(bodyParser.json({ limit: "1mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
 
 app.use(session({
   secret: process.env.SESSION_SECRET,
@@ -24,115 +24,118 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false,
+    sameSite: "lax",
     maxAge: 60 * 60 * 1000
   }
 }));
 
-// Login brute force protection
+// ================= RATE LIMIT =================
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
-  message: { success: false, message: "Too many login attempts" }
+  max: 5
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+const sendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20 // fixed hourly limit
+});
+
+app.use(express.static(path.join(__dirname, "public")));
 
 // ================= AUTH =================
 
-async function requireAuth(req, res, next) {
-  if (req.session.user) return next();
-  return res.redirect('/');
+function requireAuth(req, res, next) {
+  if (!req.session.user) return res.redirect("/");
+  next();
 }
 
-// ================= LOGIN =================
+// ================= ROUTES =================
 
-app.post('/login', loginLimiter, async (req, res) => {
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.post("/login", loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (username !== process.env.ADMIN_USER)
-    return res.json({ success: false, message: "Invalid credentials" });
+    return res.json({ success: false });
 
   const match = await bcrypt.compare(password, process.env.ADMIN_PASS_HASH);
 
   if (!match)
-    return res.json({ success: false, message: "Invalid credentials" });
+    return res.json({ success: false });
 
   req.session.user = username;
-  return res.json({ success: true });
+  res.json({ success: true });
 });
 
-// ================= SEND RATE LIMIT =================
-
-const sendLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 25,
-  message: { success: false, message: "Hourly send limit reached" }
+app.get("/launcher", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "launcher.html"));
 });
 
-// ================= HELPERS =================
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function sendBatch(transporter, mails) {
-  for (const mail of mails) {
-    try {
-      await transporter.sendMail(mail);
-      await delay(800); // safe delay
-    } catch (err) {
-      console.error("Mail failed:", err.message);
-    }
-  }
-}
+app.post("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
 
 // ================= SEND MAIL =================
 
-app.post('/send', requireAuth, sendLimiter, async (req, res) => {
+app.post("/send", requireAuth, sendLimiter, async (req, res) => {
   try {
     const { senderName, email, appPassword, recipients, subject, message } = req.body;
 
     if (!validator.isEmail(email))
       return res.json({ success: false, message: "Invalid sender email" });
 
-    const recipientList = recipients
+    const list = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
       .filter(r => validator.isEmail(r));
 
-    if (recipientList.length === 0)
+    if (list.length === 0)
       return res.json({ success: false, message: "No valid recipients" });
 
-    if (recipientList.length > 25)
-      return res.json({ success: false, message: "Max 25 per hour allowed" });
+    if (list.length > 20)
+      return res.json({ success: false, message: "Max 20 per hour allowed" });
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: { user: email, pass: appPassword }
     });
 
-    const mails = recipientList.map(r => ({
-      from: `"${senderName || 'Mailer'}" <${email}>`,
-      to: r,
-      subject: subject || "Notification",
-      text: message || ""
-    }));
+    // Fast but safe batching (5 parallel)
+    const batchSize = 5;
 
-    await sendBatch(transporter, mails);
+    for (let i = 0; i < list.length; i += batchSize) {
+      const batch = list.slice(i, i + batchSize);
 
-    return res.json({
+      await Promise.all(
+        batch.map(r =>
+          transporter.sendMail({
+            from: `"${senderName || "Mailer"}" <${email}>`,
+            to: r,
+            subject: subject || "Notification",
+            text: message || ""
+          })
+        )
+      );
+
+      await new Promise(resolve => setTimeout(resolve, 700));
+    }
+
+    res.json({
       success: true,
-      message: `Sent ${recipientList.length} mails safely`
+      message: `Successfully sent ${list.length} emails`
     });
 
   } catch (err) {
-    return res.json({ success: false, message: "Error sending emails" });
+    res.json({ success: false, message: "Sending failed" });
   }
 });
 
-// ================= START =================
-
 app.listen(PORT, () => {
-  console.log(`🚀 Safe Mail Launcher running on port ${PORT}`);
+  console.log("🚀 Safe Mailer Running");
 });
