@@ -1,92 +1,72 @@
 import express from "express";
+import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
-import nodemailer from "nodemailer";
-
-const app = express();
-const PORT = 3000;
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Static folder
-app.use(express.static(path.join(__dirname, "public")));
+const app = express();
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static("public"));
 
-// =============================
-// HOME ROUTE (Fix Cannot GET /)
-// =============================
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
-});
+const DAILY_LIMIT = 50;        // 🔒 Safe limit
+const DELAY_MS = 8000;         // 🔒 8 sec delay
 
+let sentToday = 0;
 
-// =============================
-// LOGIN SYSTEM
-// =============================
-const ADMIN_USER = "2026@#";
-const ADMIN_PASS = "2026@#";
-
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (username === ADMIN_USER && password === ADMIN_PASS) {
-    return res.json({ success: true });
-  }
-
-  res.json({ success: false });
-});
-
-
-// =============================
-// SEND MAIL
-// =============================
 app.post("/send", async (req, res) => {
   try {
-    const { senderName, gmail, apppass, subject, message, to } = req.body;
-
-    if (!gmail || !apppass || !to) {
-      return res.json({ success: false, msg: "Missing fields" });
+    if (sentToday >= DAILY_LIMIT) {
+      return res.json({ success: false, message: "Daily limit reached." });
     }
 
-    const recipients = to
+    const { email, appPassword, subject, message, recipients } = req.body;
+
+    const list = recipients
       .split(/[\n,]+/)
-      .map(e => e.trim())
-      .filter(e => e);
+      .map(r => r.trim())
+      .filter(r => r);
+
+    if (list.length === 0) {
+      return res.json({ success: false, message: "No recipients found." });
+    }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
-        user: gmail,
-        pass: apppass
+        user: email,
+        pass: appPassword
       }
     });
 
-    let sent = 0;
+    let count = 0;
 
-    for (let email of recipients) {
+    for (let to of list) {
+      if (sentToday >= DAILY_LIMIT) break;
+
       await transporter.sendMail({
-        from: `"${senderName}" <${gmail}>`,
-        to: email,
-        subject: subject,
+        from: email,
+        to,
+        subject,
         text: message
       });
-      sent++;
+
+      sentToday++;
+      count++;
+
+      await new Promise(r => setTimeout(r, DELAY_MS));
     }
 
-    res.json({ success: true, sent });
+    res.json({ success: true, message: `Sent ${count} emails safely.` });
 
   } catch (err) {
-    console.log(err);
-    res.json({ success: false, msg: "Server error" });
+    res.json({ success: false, message: err.message });
   }
 });
 
-
-// =============================
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(3000, () => {
+  console.log("Safe Mail Console running on port 3000");
 });
