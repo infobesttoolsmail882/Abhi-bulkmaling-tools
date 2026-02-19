@@ -1,53 +1,55 @@
-async function login() {
-  const username = document.getElementById("username").value;
-  const password = document.getElementById("password").value;
+if (!sessionStorage.getItem("auth")) location.href = "/login.html";
 
-  const res = await fetch("/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password })
-  });
+let sending = false;
 
-  const data = await res.json();
+const sendBtn = document.getElementById("sendBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 
-  if (data.success) {
-    window.location.href = "/launcher.html";
-  } else {
-    alert("Invalid Login");
+sendBtn.onclick = () => { if (!sending) sendMail(); };
+
+logoutBtn.onclick = () => {
+  if (!sending) {
+    sessionStorage.clear();
+    location.href = "/login.html";
   }
-}
-
-function logout() {
-  window.location.href = "/login.html";
-}
+};
 
 async function sendMail() {
-  const senderName = document.getElementById("senderName").value;
-  const email = document.getElementById("email").value;
-  const appPassword = document.getElementById("appPassword").value;
-  const subject = document.getElementById("subject").value;
-  const message = document.getElementById("message").value;
-  const recipients = document.getElementById("recipients").value;
+  sending = true;
+  sendBtn.disabled = true;
+  sendBtn.innerText = "Sending…";
 
-  const res = await fetch("/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      senderName,
-      email,
-      appPassword,
-      subject,
-      message,
-      recipients
-    })
-  });
+  try {
+    const res = await fetch("/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-auth-token": sessionStorage.getItem("auth")
+      },
+      body: JSON.stringify({
+        senderName: senderName.value.trim(),
+        gmail: gmail.value.trim(),
+        apppass: apppass.value.trim(),
+        subject: subject.value.trim(),
+        message: message.value.trim(),
+        to: to.value.trim()
+      })
+    });
 
-  const data = await res.json();
-  const status = document.getElementById("status");
+    const data = await res.json();
 
-  if (data.success) {
-    status.innerText = `Sent: ${data.sent}`;
-  } else {
-    status.innerText = data.error || "Failed";
+    if (!data.success) {
+      alert(data.msg || "Sending failed ❌");
+      return;
+    }
+
+    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
+
+  } catch {
+    alert("Server error ❌");
+  } finally {
+    sending = false;
+    sendBtn.disabled = false;
+    sendBtn.innerText = "Send All";
   }
 }
