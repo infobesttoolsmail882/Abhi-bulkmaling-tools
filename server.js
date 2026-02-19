@@ -1,104 +1,142 @@
-require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
 const nodemailer = require("nodemailer");
 const path = require("path");
 
 const app = express();
+const PORT = process.env.PORT || 8080;
+
+/* ===== LOGIN ===== */
+
+const ADMIN_USER = "2026@#";
+const ADMIN_PASS = "2026@#";
+
+/* ===== MIDDLEWARE ===== */
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    secret: process.env.SESSION_SECRET,
+    secret: "secure-mail-secret",
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false }
+    cookie: { maxAge: 60 * 60 * 1000 }
   })
 );
 
-app.use(express.static(path.join(__dirname, "public")));
+/* ===== AUTH ===== */
 
-// ✅ ROOT FIX
-app.get("/", (req, res) => {
-  res.redirect("/login.html");
-});
-
-// ✅ LOGIN
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (
-    username === process.env.ADMIN_USER &&
-    password === process.env.ADMIN_PASS
-  ) {
-    req.session.user = true;
-    return res.json({ success: true });
-  }
-
-  res.json({ success: false });
-});
-
-// ✅ AUTH CHECK
-function checkAuth(req, res, next) {
-  if (!req.session.user) {
-    return res.status(401).json({ msg: "Unauthorized" });
-  }
+function requireAuth(req, res, next) {
+  if (!req.session.user) return res.redirect("/");
   next();
 }
 
-// ✅ SEND MAIL (SAFE LIMIT)
-app.post("/send", checkAuth, async (req, res) => {
+/* ===== ROUTES ===== */
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    req.session.user = username;
+    return res.json({ success: true });
+  }
+
+  return res.json({ success: false, message: "Invalid Login ❌" });
+});
+
+app.get("/launcher", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "launcher.html"));
+});
+
+app.post("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
+
+/* ===== MAIL LIMIT SYSTEM ===== */
+
+let mailLimits = {};
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendBatch(transporter, mails) {
+  const batchSize = 10;
+
+  for (let i = 0; i < mails.length; i += batchSize) {
+    await Promise.allSettled(
+      mails.slice(i, i + batchSize).map((m) => transporter.sendMail(m))
+    );
+    await delay(200);
+  }
+}
+
+/* ===== SEND MAIL ===== */
+
+app.post("/send", requireAuth, async (req, res) => {
   try {
     const { senderName, gmail, apppass, subject, message, to } = req.body;
 
-    if (!gmail || !apppass || !subject || !message || !to) {
-      return res.json({ success: false, msg: "All fields required" });
+    if (!gmail || !apppass || !to) {
+      return res.json({ success: false, message: "Missing fields" });
+    }
+
+    const now = Date.now();
+
+    if (
+      !mailLimits[gmail] ||
+      now - mailLimits[gmail].startTime > 60 * 60 * 1000
+    ) {
+      mailLimits[gmail] = { count: 0, startTime: now };
     }
 
     const recipients = to
       .split(/[\n,]+/)
-      .map(e => e.trim())
+      .map((r) => r.trim())
       .filter(Boolean);
 
-    // 🔒 SAFE LIMIT (Max 50 per request)
-    if (recipients.length > 50) {
+    if (mailLimits[gmail].count + recipients.length > 25) {
       return res.json({
         success: false,
-        msg: "Limit: 50 emails per send"
+        message: "Hourly limit 25 reached"
       });
     }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: {
-        user: gmail,
-        pass: apppass
-      }
+      auth: { user: gmail, pass: apppass }
     });
 
-    let sentCount = 0;
+    const mails = recipients.map((r) => ({
+      from: `"${senderName || "Sender"}" <${gmail}>`,
+      to: r,
+      subject: subject || "Message",
+      text: message || ""
+    }));
 
-    for (let email of recipients) {
-      await transporter.sendMail({
-        from: `"${senderName}" <${gmail}>`,
-        to: email,
-        subject: subject,
-        text: message
-      });
+    await sendBatch(transporter, mails);
 
-      sentCount++;
-    }
+    mailLimits[gmail].count += recipients.length;
 
-    res.json({ success: true, sent: sentCount });
-
+    res.json({
+      success: true,
+      sent: recipients.length
+    });
   } catch (err) {
-    console.error(err);
-    res.json({ success: false, msg: "Sending failed" });
+    res.json({ success: false, message: err.message });
   }
 });
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log("Server running...")
-);
+/* ===== START ===== */
+
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
+});
