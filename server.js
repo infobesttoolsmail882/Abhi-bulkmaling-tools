@@ -2,7 +2,6 @@ const express = require("express");
 const nodemailer = require("nodemailer");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const rateLimit = require("express-rate-limit");
 const path = require("path");
 
 const app = express();
@@ -12,28 +11,27 @@ const SECRET = "SUPER_SECRET_KEY_CHANGE_THIS";
 app.use(express.json());
 app.use(express.static("public"));
 
-// ===== LOGIN USER (hashed password)
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/login.html"));
+});
+
 const USER = {
   username: "admin",
   password: bcrypt.hashSync("1234", 10)
 };
 
-// ===== MEMORY RATE STORE (Per Email)
 const rateStore = new Map();
 const MAX_PER_HOUR = 28;
 const ONE_HOUR = 60 * 60 * 1000;
 
-function checkLimit(senderEmail) {
+function checkLimit(email) {
   const now = Date.now();
 
-  if (!rateStore.has(senderEmail)) {
-    rateStore.set(senderEmail, {
-      count: 0,
-      startTime: now
-    });
+  if (!rateStore.has(email)) {
+    rateStore.set(email, { count: 0, startTime: now });
   }
 
-  const data = rateStore.get(senderEmail);
+  const data = rateStore.get(email);
 
   if (now - data.startTime > ONE_HOUR) {
     data.count = 0;
@@ -48,14 +46,6 @@ function checkLimit(senderEmail) {
   return true;
 }
 
-// ===== API RATE LIMIT (IP Based)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100
-});
-app.use("/send", apiLimiter);
-
-// ===== LOGIN ROUTE
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
@@ -72,7 +62,6 @@ app.post("/login", async (req, res) => {
   res.json({ token });
 });
 
-// ===== AUTH MIDDLEWARE
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: "No token" });
@@ -86,33 +75,25 @@ function auth(req, res, next) {
   }
 }
 
-// ===== SEND EMAIL ROUTE
 app.post("/send", auth, async (req, res) => {
   try {
     const { senderName, email, appPassword, subject, message, recipients } = req.body;
 
-    if (!senderName || !email || !appPassword || !subject || !message || !recipients) {
-      return res.status(400).json({ error: "All fields required" });
-    }
-
     if (!checkLimit(email)) {
       return res.status(429).json({
-        error: "Hourly limit reached (28 emails). Try after 1 hour."
+        error: "Limit reached (28 per hour)"
       });
     }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: {
-        user: email,
-        pass: appPassword
-      }
+      auth: { user: email, pass: appPassword }
     });
 
     await transporter.sendMail({
       from: `"${senderName}" <${email}>`,
       to: recipients,
-      subject: subject,
+      subject,
       text: message
     });
 
