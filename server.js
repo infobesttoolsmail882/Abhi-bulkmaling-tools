@@ -4,38 +4,51 @@ const session = require("express-session");
 const rateLimit = require("express-rate-limit");
 
 const app = express();
-
-// Render ke liye dynamic port
 const PORT = process.env.PORT || 3000;
+
+/* ================= BASIC SECURITY ================= */
+
+app.disable("x-powered-by");
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session
+/* ================= SESSION CONFIG ================= */
+
 app.use(session({
-  secret: "abhi_secure_key_2026",
+  name: "secure_session",
+  secret: process.env.SESSION_SECRET || "abhi_secure_key_2026",
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false,
-    maxAge: 30 * 60 * 1000
+    secure: false, // Render HTTP use karta hai
+    sameSite: "lax",
+    maxAge: 30 * 60 * 1000 // 30 min
   }
 }));
 
-// Rate limit (5 login attempts / 15 min)
+/* ================= RATE LIMIT ================= */
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
-  message: { success: false, message: "Too many attempts. Try later." }
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login attempts. Try again later."
+  }
 });
 
-// Static
+/* ================= STATIC FILES ================= */
+
 app.use(express.static(path.join(__dirname, "public")));
 
-// 🔥 ROOT FIX (IMPORTANT)
+/* ================= ROOT FIX ================= */
+
 app.get("/", (req, res) => {
-  res.redirect("/login.html");
+  return res.redirect("/login.html");
 });
 
 /* ================= LOGIN ================= */
@@ -44,24 +57,37 @@ app.post("/login", loginLimiter, (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
-    return res.json({ success: false });
+    return res.json({ success: false, message: "All fields required" });
   }
 
+  // CHANGE THESE CREDENTIALS IF NEEDED
   if (username === "admin" && password === "1234") {
-    req.session.auth = true;
+    req.session.authenticated = true;
     return res.json({ success: true });
   }
 
-  res.json({ success: false });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
-/* =============== CHECK AUTH =============== */
+/* ================= AUTH CHECK ================= */
 
 app.get("/check-auth", (req, res) => {
-  res.json({ authenticated: !!req.session.auth });
+  if (req.session.authenticated) {
+    return res.json({ authenticated: true });
+  }
+  return res.json({ authenticated: false });
 });
 
-/* =============== LOGOUT =============== */
+/* ================= PROTECT LAUNCHER ================= */
+
+app.get("/launcher.html", (req, res, next) => {
+  if (!req.session.authenticated) {
+    return res.redirect("/login.html");
+  }
+  next();
+});
+
+/* ================= LOGOUT ================= */
 
 app.get("/logout", (req, res) => {
   req.session.destroy(() => {
@@ -69,17 +95,8 @@ app.get("/logout", (req, res) => {
   });
 });
 
-/* =============== PROTECT LAUNCHER =============== */
-
-app.get("/launcher.html", (req, res, next) => {
-  if (!req.session.auth) {
-    return res.redirect("/login.html");
-  }
-  next();
-});
-
-/* ================= START ================= */
+/* ================= START SERVER ================= */
 
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });
