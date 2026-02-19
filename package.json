@@ -1,10 +1,7 @@
 {
-  "name": "safe-mail-console",
+  "name": "safe-mail-sender",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
   "dependencies": {
     "express": "^4.19.2",
     "nodemailer": "^6.9.9"
