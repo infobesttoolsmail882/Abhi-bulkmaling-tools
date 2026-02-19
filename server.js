@@ -4,88 +4,82 @@ const session = require("express-session");
 const rateLimit = require("express-rate-limit");
 
 const app = express();
-const PORT = 3000;
 
-/* =======================
-   SECURITY MIDDLEWARE
-======================= */
-
-// Rate limit (5 login attempts per 15 min)
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  message: { success: false, message: "Too many login attempts. Try later." }
-});
+// Render ke liye dynamic port
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+// Session
 app.use(session({
-  secret: "abhi_secure_secret_key",
+  secret: "abhi_secure_key_2026",
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false, // true if using HTTPS
-    maxAge: 30 * 60 * 1000 // 30 minutes
+    secure: false,
+    maxAge: 30 * 60 * 1000
   }
 }));
 
+// Rate limit (5 login attempts / 15 min)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { success: false, message: "Too many attempts. Try later." }
+});
+
+// Static
 app.use(express.static(path.join(__dirname, "public")));
 
-/* =======================
-   AUTH ROUTES
-======================= */
+// 🔥 ROOT FIX (IMPORTANT)
+app.get("/", (req, res) => {
+  res.redirect("/login.html");
+});
 
-// Login Route
+/* ================= LOGIN ================= */
+
 app.post("/login", loginLimiter, (req, res) => {
   const { username, password } = req.body;
 
-  if (
-    typeof username !== "string" ||
-    typeof password !== "string"
-  ) {
+  if (!username || !password) {
     return res.json({ success: false });
   }
 
   if (username === "admin" && password === "1234") {
-    req.session.authenticated = true;
+    req.session.auth = true;
     return res.json({ success: true });
   }
 
   res.json({ success: false });
 });
 
-// Check Auth
+/* =============== CHECK AUTH =============== */
+
 app.get("/check-auth", (req, res) => {
-  if (req.session.authenticated) {
-    res.json({ authenticated: true });
-  } else {
-    res.json({ authenticated: false });
-  }
+  res.json({ authenticated: !!req.session.auth });
 });
 
-// Logout
+/* =============== LOGOUT =============== */
+
 app.get("/logout", (req, res) => {
   req.session.destroy(() => {
     res.json({ success: true });
   });
 });
 
-/* =======================
-   PROTECT LAUNCHER
-======================= */
+/* =============== PROTECT LAUNCHER =============== */
 
 app.get("/launcher.html", (req, res, next) => {
-  if (!req.session.authenticated) {
+  if (!req.session.auth) {
     return res.redirect("/login.html");
   }
   next();
 });
 
-/* =======================
-   START SERVER
-======================= */
+/* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log(`Secure Server running on http://localhost:${PORT}`);
+  console.log("Server running on port " + PORT);
 });
