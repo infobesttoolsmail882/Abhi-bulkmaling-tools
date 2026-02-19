@@ -7,39 +7,36 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Serve public folder properly
 app.use(express.static(path.join(__dirname, "public")));
 
-// 🔹 ROOT ROUTE FIX
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+const MAX_LIMIT = 25;
+
+// LOGIN CHECK
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === "2026" && password === "2026") {
+    return res.json({ success: true });
+  } else {
+    return res.json({ success: false });
+  }
 });
 
-const LIMIT = 30;        // 🔒 Safe limit
-const DELAY = 10000;     // 🔒 10 sec delay
-
+// SEND MAIL
 app.post("/send", async (req, res) => {
   try {
+    const { email, appPassword, subject, message, recipients, senderName } = req.body;
 
-    const { email, appPassword, subject, message, recipients } = req.body;
-
-    if (!email || !appPassword) {
-      return res.json({ success: false, message: "Email & App Password required" });
-    }
-
-    const list = recipients
+    let list = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
       .filter(r => r);
 
-    if (list.length > LIMIT) {
-      return res.json({ success: false, message: `Limit is ${LIMIT} emails per run.` });
+    if (list.length > MAX_LIMIT) {
+      return res.json({ error: `Limit exceeded (Max ${MAX_LIMIT})` });
     }
 
     const transporter = nodemailer.createTransport({
@@ -50,29 +47,24 @@ app.post("/send", async (req, res) => {
       }
     });
 
-    let sent = 0;
-
-    for (let to of list) {
-
+    for (let r of list) {
       await transporter.sendMail({
-        from: email,
-        to,
-        subject,
+        from: `"${senderName}" <${email}>`,
+        to: r,
+        subject: subject,
         text: message
       });
 
-      sent++;
-
-      await new Promise(r => setTimeout(r, DELAY));
+      await new Promise(resolve => setTimeout(resolve, 1500)); // delay
     }
 
-    res.json({ success: true, message: `Safely sent ${sent} emails.` });
+    res.json({ success: true, sent: list.length });
 
   } catch (err) {
-    res.json({ success: false, message: err.message });
+    res.json({ error: "Sending failed" });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port", PORT);
 });
