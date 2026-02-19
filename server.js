@@ -1,143 +1,146 @@
-const express = require("express");
-const nodemailer = require("nodemailer");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const path = require("path");
+import express from "express";
+import nodemailer from "nodemailer";
+import path from "path";
+import { fileURLToPath } from "url";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SECRET = "CHANGE_THIS_SECRET_KEY_NOW";
 
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
+/* ================= SECURITY ================= */
+app.use(helmet());
 
-/* SERVE PUBLIC FOLDER */
+app.use(express.json({ limit: "50kb" }));
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60
+});
+app.use(limiter);
+
+/* ================= STATIC ================= */
 app.use(express.static(path.join(__dirname, "public")));
 
-/* ROOT FIX (Cannot GET / FIXED) */
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* LOGIN USER (2026 / 2026) */
-const USER = {
-  username: "2026",
-  password: bcrypt.hashSync("2026", 10)
-};
+/* ================= SAME SPEED SETTINGS ================= */
+const HOURLY_LIMIT = 28;
+const PARALLEL = 3;
+const DELAY_MS = 120;
 
-/* RATE LIMIT SYSTEM */
-const rateStore = new Map();
-const MAX_PER_HOUR = 28;
-const ONE_HOUR = 60 * 60 * 1000;
+let stats = {};
+setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
-function checkLimit(email, totalToSend) {
-  const now = Date.now();
+/* ================= HELPERS ================= */
+const cleanText = t =>
+  (t || "").replace(/\r\n/g, "\n").trim().slice(0, 4000);
 
-  if (!rateStore.has(email)) {
-    rateStore.set(email, { count: 0, start: now });
-  }
+const cleanSubject = s =>
+  (s || "").replace(/\s+/g, " ").trim().slice(0, 120);
 
-  const data = rateStore.get(email);
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  if (now - data.start > ONE_HOUR) {
-    data.count = 0;
-    data.start = now;
-  }
+/* ================= CONTROLLED PARALLEL SEND ================= */
+async function sendSafely(transporter, mails) {
+  let sent = 0;
 
-  if (data.count + totalToSend > MAX_PER_HOUR) {
-    return false;
-  }
+  for (let i = 0; i < mails.length; i += PARALLEL) {
+    const batch = mails.slice(i, i + PARALLEL);
 
-  data.count += totalToSend;
-  return true;
-}
-
-/* LOGIN ROUTE */
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-
-  if (username !== USER.username) {
-    return res.status(401).json({ error: "Login Failed" });
-  }
-
-  const valid = await bcrypt.compare(password, USER.password);
-  if (!valid) {
-    return res.status(401).json({ error: "Login Failed" });
-  }
-
-  const token = jwt.sign({ username }, SECRET, { expiresIn: "2h" });
-  res.json({ token });
-});
-
-/* AUTH MIDDLEWARE */
-function auth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: "Unauthorized" });
-
-  try {
-    const token = header.split(" ")[1];
-    jwt.verify(token, SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: "Unauthorized" });
-  }
-}
-
-/* FAST MAIL SENDER */
-app.post("/send", auth, async (req, res) => {
-  try {
-    const { senderName, email, appPassword, subject, message, recipients } = req.body;
-
-    if (!senderName || !email || !appPassword || !subject || !message || !recipients) {
-      return res.status(400).json({ error: "All fields required" });
-    }
-
-    const recipientList = recipients
-      .split(/[\n,]+/)
-      .map(r => r.trim())
-      .filter(r => r.length > 0);
-
-    if (recipientList.length === 0) {
-      return res.status(400).json({ error: "No valid recipients" });
-    }
-
-    if (!checkLimit(email, recipientList.length)) {
-      return res.status(429).json({
-        error: "Hourly limit (28) exceeded"
-      });
-    }
-
-    /* Reusable transporter */
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: email,
-        pass: appPassword
-      }
-    });
-
-    /* FAST PARALLEL SENDING */
-    await Promise.all(
-      recipientList.map(to =>
-        transporter.sendMail({
-          from: `"${senderName}" <${email}>`,
-          to,
-          subject,
-          text: message
-        })
-      )
+    const results = await Promise.allSettled(
+      batch.map(m => transporter.sendMail(m))
     );
 
-    res.json({
-      success: `Sent to ${recipientList.length} recipients successfully`
+    results.forEach(r => {
+      if (r.status === "fulfilled") sent++;
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Sending Failed" });
+    await new Promise(r => setTimeout(r, DELAY_MS));
   }
+
+  return sent;
+}
+
+/* ================= LOGIN ROUTE ================= */
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (
+    username === process.env.PANEL_USER &&
+    password === process.env.PANEL_PASS
+  ) {
+    return res.json({ success: true, token: process.env.PANEL_TOKEN });
+  }
+
+  return res.json({ success: false });
 });
 
-app.listen(PORT, () => {
-  console.log("🚀 Secure Mail Server Running on port " + PORT);
+/* ================= SEND ROUTE ================= */
+app.post("/send", async (req, res) => {
+
+  if (req.headers["x-auth-token"] !== process.env.PANEL_TOKEN)
+    return res.json({ success: false, msg: "Unauthorized ❌" });
+
+  const { senderName, gmail, apppass, to, subject, message } = req.body;
+
+  if (!gmail || !apppass || !to || !subject || !message)
+    return res.json({ success: false, msg: "Missing fields ❌" });
+
+  if (!emailRegex.test(gmail))
+    return res.json({ success: false, msg: "Invalid Gmail ❌" });
+
+  if (!stats[gmail]) stats[gmail] = { count: 0 };
+
+  if (stats[gmail].count >= HOURLY_LIMIT)
+    return res.json({ success: false, msg: "Hourly limit reached ❌" });
+
+  const recipients = to
+    .split(/,|\n/)
+    .map(r => r.trim())
+    .filter(r => emailRegex.test(r));
+
+  if (recipients.length === 0)
+    return res.json({ success: false, msg: "No valid recipients ❌" });
+
+  const remaining = HOURLY_LIMIT - stats[gmail].count;
+
+  if (recipients.length > remaining)
+    return res.json({ success: false, msg: "Limit full ❌" });
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: gmail, pass: apppass }
+  });
+
+  try {
+    await transporter.verify();
+  } catch {
+    return res.json({ success: false, msg: "Gmail login failed ❌" });
+  }
+
+  const mails = recipients.map(r => ({
+    from: `"${senderName || gmail}" <${gmail}>`,
+    to: r,
+    subject: cleanSubject(subject),
+    text: cleanText(message),
+    replyTo: gmail
+  }));
+
+  const sent = await sendSafely(transporter, mails);
+
+  stats[gmail].count += sent;
+
+  res.json({ success: true, sent });
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("✅ Secure Mail Server Running");
 });
