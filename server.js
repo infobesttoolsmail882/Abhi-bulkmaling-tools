@@ -2,13 +2,10 @@ import express from "express";
 import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
 
-/* LOGIN CREDENTIALS */
-const PANEL_USER = "admin11";
-const PANEL_PASS = "admin11";
-const PANEL_TOKEN = "secure_internal_token_2026";
+/* LOGIN */
+const LOGIN_USER = "admin11";
+const LOGIN_PASS = "admin11";
 
 /* INIT */
 const __filename = fileURLToPath(import.meta.url);
@@ -16,18 +13,22 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-app.use(helmet());
 app.use(express.json({ limit: "50kb" }));
-
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100
-}));
-
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
+  res.sendFile(path.join(__dirname, "public/login.html"));
+});
+
+/* LOGIN API */
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === LOGIN_USER && password === LOGIN_PASS) {
+    return res.json({ success: true });
+  }
+
+  res.json({ success: false });
 });
 
 /* MAIL SPEED SETTINGS */
@@ -39,9 +40,6 @@ let stats = {};
 setInterval(() => { stats = {}; }, 60 * 60 * 1000);
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-const cleanText = t => (t || "").trim().slice(0, 4000);
-const cleanSubject = s => (s || "").trim().slice(0, 120);
 
 async function sendSafely(transporter, mails) {
   let sent = 0;
@@ -63,22 +61,8 @@ async function sendSafely(transporter, mails) {
   return sent;
 }
 
-/* LOGIN API */
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (username === PANEL_USER && password === PANEL_PASS) {
-    return res.json({ success: true, token: PANEL_TOKEN });
-  }
-
-  return res.json({ success: false });
-});
-
 /* SEND API */
 app.post("/send", async (req, res) => {
-
-  if (req.headers["x-auth-token"] !== PANEL_TOKEN)
-    return res.json({ success: false, msg: "Unauthorized ❌" });
 
   const { senderName, gmail, apppass, to, subject, message } = req.body;
 
@@ -120,18 +104,16 @@ app.post("/send", async (req, res) => {
   const mails = recipients.map(r => ({
     from: `"${senderName || gmail}" <${gmail}>`,
     to: r,
-    subject: cleanSubject(subject),
-    text: cleanText(message),
-    replyTo: gmail
+    subject,
+    text: message
   }));
 
   const sent = await sendSafely(transporter, mails);
-
   stats[gmail].count += sent;
 
   res.json({ success: true, sent });
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ Server Running");
+  console.log("Server Running...");
 });
