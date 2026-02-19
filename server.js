@@ -1,73 +1,26 @@
-// ======================================
-// Secure Mail Server - Production Safe
-// ======================================
-
 const express = require("express");
-const nodemailer = require("nodemailer");
 const path = require("path");
 
 const app = express();
+const PORT = 3000;
+
+// Middleware
 app.use(express.json());
-app.use(express.static("public"));
+app.use(express.static(path.join(__dirname, "public")));
 
-// ===============================
-// SEND ROUTE
-// ===============================
-app.post("/send", async (req, res) => {
-  try {
-    const { senderName, gmail, apppass, subject, message, to } = req.body;
+// Simple Login API
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
 
-    if (!senderName || !gmail || !apppass || !subject || !message || !to) {
-      return res.json({ success: false, msg: "Missing fields" });
-    }
-
-    const recipients = Array.isArray(to) ? to : [to];
-
-    // Create transporter
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: gmail,
-        pass: apppass
-      }
-    });
-
-    let sentCount = 0;
-
-    for (let email of recipients) {
-      try {
-        await transporter.sendMail({
-          from: `"${senderName}" <${gmail}>`,
-          to: email,
-          subject: subject,
-          text: message
-        });
-
-        sentCount++;
-      } catch (err) {
-        console.log("Failed:", email);
-      }
-    }
-
-    return res.json({
-      success: true,
-      sent: sentCount
-    });
-
-  } catch (err) {
-    console.error("SERVER ERROR:", err);
-    return res.json({
-      success: false,
-      msg: "Internal server error"
-    });
+  // Change these credentials if needed
+  if (username === "admin" && password === "1234") {
+    res.json({ success: true });
+  } else {
+    res.json({ success: false });
   }
 });
 
-// ===============================
 // Start Server
-// ===============================
-const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
