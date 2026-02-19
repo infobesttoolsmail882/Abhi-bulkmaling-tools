@@ -1,12 +1,12 @@
 {
-  "name": "secure-mail-console",
+  "name": "abhi-bulkmailing-tools",
   "version": "1.0.0",
+  "description": "Secure Bulk Mailing Tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "nodemailer": "^6.9.8"
+    "express": "^4.18.2"
   }
 }
