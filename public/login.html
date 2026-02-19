@@ -5,34 +5,15 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
   <div class="login-box">
-    <h2>Secure Access</h2>
-    <input id="uid" placeholder="Username">
-    <input id="upass" type="password" placeholder="Password">
-    <button id="loginBtn">Login</button>
+    <h2>Secure Login</h2>
+    <input type="text" id="username" placeholder="Username">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+    <p id="error"></p>
   </div>
 
-<script>
-document.getElementById("loginBtn").onclick = async function() {
-
-  const res = await fetch("/login", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({
-      username: document.getElementById("uid").value.trim(),
-      password: document.getElementById("upass").value.trim()
-    })
-  });
-
-  const data = await res.json();
-
-  if (data.success) {
-    sessionStorage.setItem("auth","ok");
-    window.location.href = "/launcher.html";
-  } else {
-    alert("Invalid Login ❌");
-  }
-};
-</script>
+  <script src="script.js"></script>
 </body>
 </html>
