@@ -1,27 +1,27 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Secure Mail Console</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <div class="card large">
-    <h2>Secure Mail Console</h2>
+<script>
+async function sendMail() {
+  const response = await fetch("/send", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + localStorage.getItem("token")
+    },
+    body: JSON.stringify({
+      senderName: senderName.value,
+      email: email.value,
+      appPassword: appPassword.value,
+      subject: subject.value,
+      message: message.value,
+      recipients: recipients.value
+    })
+  });
 
-    <input id="senderName" placeholder="Sender Name">
-    <input id="email" placeholder="Your Gmail">
-    <input id="appPassword" type="password" placeholder="App Password">
-    <input id="subject" placeholder="Email Subject">
+  const data = await response.json();
 
-    <textarea id="message" placeholder="Message Body"></textarea>
-    <textarea id="recipients" placeholder="Recipients (comma / new line)"></textarea>
-
-    <button onclick="sendMail()">Send All</button>
-    <button onclick="logout()">Logout</button>
-
-    <p id="status"></p>
-  </div>
-
-  <script src="script.js"></script>
-</body>
-</html>
+  if (data.success) {
+    alert("Email Sent Successfully");
+  } else {
+    alert(data.error);
+  }
+}
+</script>
