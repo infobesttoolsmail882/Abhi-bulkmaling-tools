@@ -28,7 +28,9 @@ async function login(){
       password:password.value
     })
   });
+
   const data = await res.json();
+
   if(data.token){
     localStorage.setItem("token",data.token);
     window.location="launcher.html";
