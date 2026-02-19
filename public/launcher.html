@@ -55,6 +55,7 @@ let count = 0;
 
 async function sendMail(){
   const token = localStorage.getItem("token");
+
   const res = await fetch("/send",{
     method:"POST",
     headers:{
@@ -76,7 +77,7 @@ async function sendMail(){
   if(data.success){
     count++;
     counter.innerText = count+"/28";
-    showPopup("Email Sent Successfully");
+    showPopup(data.success);
   }else{
     showPopup(data.error);
   }
