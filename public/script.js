@@ -1,10 +1,14 @@
 let sending = false;
 
-sendBtn.onclick = () => { if (!sending) sendMail(); };
+const sendBtn = document.getElementById("sendBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 
-logoutBtn.onclick = async () => {
-  await fetch("/logout", { method: "POST" });
-  location.href = "/";
+sendBtn.onclick = () => {
+  if (!sending) sendMail();
+};
+
+logoutBtn.onclick = () => {
+  location.href = "/login.html";
 };
 
 async function sendMail() {
@@ -12,22 +16,31 @@ async function sendMail() {
   sendBtn.disabled = true;
   sendBtn.innerText = "Sending...";
 
-  const res = await fetch("/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      senderName: senderName.value.trim(),
-      email: gmail.value.trim(),
-      appPassword: apppass.value.trim(),
-      subject: subject.value.trim(),
-      message: message.value.trim(),
-      recipients: to.value.trim()
-    })
-  });
+  try {
+    const res = await fetch("/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        senderName: senderName.value.trim(),
+        gmail: gmail.value.trim(),
+        apppass: apppass.value.trim(),
+        subject: subject.value.trim(),
+        message: message.value.trim(),
+        to: to.value.trim()
+      })
+    });
 
-  const data = await res.json();
+    const data = await res.json();
 
-  alert(data.message || "Done");
+    if (!data.success) {
+      alert(data.msg || "Sending failed ❌");
+    } else {
+      alert(`Sent: ${data.sent} emails ✅`);
+    }
+
+  } catch {
+    alert("Server error ❌");
+  }
 
   sending = false;
   sendBtn.disabled = false;
