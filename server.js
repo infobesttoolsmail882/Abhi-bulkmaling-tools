@@ -6,10 +6,18 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SECRET = "SUPER_SECURE_SECRET_CHANGE_THIS";
+const SECRET = "CHANGE_THIS_SECRET_KEY_NOW";
 
 app.use(express.json({ limit: "5mb" }));
-app.use(express.static("public"));
+app.use(express.urlencoded({ extended: true }));
+
+/* SERVE PUBLIC FOLDER */
+app.use(express.static(path.join(__dirname, "public")));
+
+/* ROOT FIX (Cannot GET / FIXED) */
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
 /* LOGIN USER (2026 / 2026) */
 const USER = {
@@ -108,17 +116,17 @@ app.post("/send", auth, async (req, res) => {
       }
     });
 
-    /* Parallel sending for speed */
-    const sendPromises = recipientList.map(to =>
-      transporter.sendMail({
-        from: `"${senderName}" <${email}>`,
-        to,
-        subject,
-        text: message
-      })
+    /* FAST PARALLEL SENDING */
+    await Promise.all(
+      recipientList.map(to =>
+        transporter.sendMail({
+          from: `"${senderName}" <${email}>`,
+          to,
+          subject,
+          text: message
+        })
+      )
     );
-
-    await Promise.all(sendPromises);
 
     res.json({
       success: `Sent to ${recipientList.length} recipients successfully`
@@ -131,5 +139,5 @@ app.post("/send", auth, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("⚡ Fast Secure Server running on port " + PORT);
+  console.log("🚀 Secure Mail Server Running on port " + PORT);
 });
