@@ -5,16 +5,17 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Health route
+// Health check
 app.get("/", (req, res) => {
   res.status(200).send("Server Running ✅");
 });
 
-// Email route
+// Send mail route
 app.post("/send", async (req, res) => {
   try {
     const { senderName, gmail, apppass, subject, message, to } = req.body;
@@ -27,7 +28,7 @@ app.post("/send", async (req, res) => {
       });
     }
 
-    // Clean recipients
+    // Clean and validate recipients
     const recipients = to
       .split(/[\n,]+/)
       .map(e => e.trim())
@@ -40,11 +41,11 @@ app.post("/send", async (req, res) => {
       });
     }
 
-    // Responsible per-request limit
-    if (recipients.length > 30) {
+    // Safety limit (protect account reputation)
+    if (recipients.length > 25) {
       return res.status(400).json({
         success: false,
-        msg: "Maximum 30 emails per request for account safety"
+        msg: "Maximum 25 emails per request for account safety"
       });
     }
 
@@ -56,7 +57,7 @@ app.post("/send", async (req, res) => {
       },
       pool: true,
       maxConnections: 2,
-      maxMessages: 50
+      maxMessages: 100
     });
 
     await transporter.verify();
@@ -68,9 +69,9 @@ app.post("/send", async (req, res) => {
       await transporter.sendMail({
         from: `"${senderName}" <${gmail}>`,
         to: email,
-        subject: subject,        // EXACT subject (no change)
+        subject: subject,        // EXACT subject
         replyTo: gmail,
-        text: message,           // EXACT message (no modification)
+        text: message,           // EXACT text
         html: `
           <div style="font-family: Arial, sans-serif; font-size:14px; color:#222; line-height:1.6;">
             ${message.replace(/\n/g, "<br>")}
@@ -78,14 +79,14 @@ app.post("/send", async (req, res) => {
         `,
         headers: {
           "X-Mailer": "NodeMailer",
-          "X-Priority": "3"
+          "Precedence": "bulk"
         }
       });
 
       sent++;
 
-      // Responsible sending delay
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      // 3 second SAFE delay
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
 
     return res.json({
