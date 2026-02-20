@@ -1,13 +1,9 @@
 {
-  "name": "abhi-bulkmailing-tools",
+  "name": "safe-mail-sender",
   "version": "1.0.0",
-  "description": "Bulk mailing tool",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "type": "module",
   "dependencies": {
-    "express": "^4.18.2",
-    "nodemailer": "^6.9.8"
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.9"
   }
 }
