@@ -10,13 +10,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
 
-// ✅ Health check
+// Health route
 app.get("/", (req, res) => {
   res.send("Server Running ✅");
 });
 
 
-// ✅ Mail Sender Route
+// Send mail route
 app.post("/send", async (req, res) => {
   try {
     const { senderName, gmail, apppass, subject, message, to } = req.body;
@@ -24,11 +24,11 @@ app.post("/send", async (req, res) => {
     if (!senderName || !gmail || !apppass || !subject || !message || !to) {
       return res.status(400).json({
         success: false,
-        msg: "All fields are required"
+        msg: "All fields required"
       });
     }
 
-    // Clean recipients list
+    // Clean email list
     const recipients = to
       .split(/[\n,]+/)
       .map(e => e.trim())
@@ -37,19 +37,18 @@ app.post("/send", async (req, res) => {
     if (recipients.length === 0) {
       return res.status(400).json({
         success: false,
-        msg: "No valid recipient emails found"
+        msg: "No valid emails found"
       });
     }
 
-    // ⚠ Gmail daily safe limit protection
-    if (recipients.length > 40) {
+    // Safety limit (important for Gmail)
+    if (recipients.length > 60) {
       return res.status(400).json({
         success: false,
-        msg: "Maximum 40 emails allowed per request for safety"
+        msg: "Maximum 60 emails per request"
       });
     }
 
-    // ✅ Create transporter
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -58,60 +57,49 @@ app.post("/send", async (req, res) => {
       }
     });
 
-    let sentCount = 0;
+    let sent = 0;
 
     for (let email of recipients) {
 
-      // Random small variation (spam reduce)
-      const randomId = Math.floor(Math.random() * 10000);
+      const uniqueTag = Math.floor(Math.random() * 9999);
 
       await transporter.sendMail({
         from: `"${senderName}" <${gmail}>`,
         to: email,
-        subject: `${subject} | Ref-${randomId}`,
+        subject: `${subject} - ${uniqueTag}`,
 
-        text: message + "\n\n--\nSent securely",
+        text: message,
 
         html: `
-          <div style="font-family:Arial,sans-serif;line-height:1.6">
+          <div style="font-family:Arial;line-height:1.6">
             <p>${message}</p>
             <br/>
             <hr/>
-            <small>
-              This email was sent securely.<br/>
-              If this was sent in error, please ignore.
-            </small>
+            <small>Sent securely.</small>
           </div>
-        `,
-
-        headers: {
-          "X-Mailer": "Secure Mail System",
-          "Precedence": "bulk"
-        }
+        `
       });
 
-      sentCount++;
+      sent++;
 
-      // ✅ 7 second delay (VERY IMPORTANT)
-      await new Promise(resolve => setTimeout(resolve, 7000));
+      // ⚡ Fast delay (800ms)
+      await new Promise(resolve => setTimeout(resolve, 800));
     }
 
     return res.json({
       success: true,
-      sent: sentCount
+      sent
     });
 
   } catch (err) {
-    console.error("Mail Error:", err);
+    console.error("Error:", err);
     return res.status(500).json({
       success: false,
-      msg: "Server error while sending mail"
+      msg: "Server error"
     });
   }
 });
 
-
-// ✅ Start Server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
