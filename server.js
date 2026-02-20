@@ -5,21 +5,21 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Health check
+// Health route
 app.get("/", (req, res) => {
-  res.send("Server Running ✅");
+  res.status(200).send("Server Running ✅");
 });
 
-// Email sending route
+// Email route
 app.post("/send", async (req, res) => {
   try {
     const { senderName, gmail, apppass, subject, message, to } = req.body;
 
-    // Basic validation
+    // Strict validation
     if (!senderName || !gmail || !apppass || !subject || !message || !to) {
       return res.status(400).json({
         success: false,
@@ -31,7 +31,7 @@ app.post("/send", async (req, res) => {
     const recipients = to
       .split(/[\n,]+/)
       .map(e => e.trim())
-      .filter(e => e.length > 0);
+      .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
     if (recipients.length === 0) {
       return res.status(400).json({
@@ -40,11 +40,11 @@ app.post("/send", async (req, res) => {
       });
     }
 
-    // Gmail safe limit
-    if (recipients.length > 40) {
+    // Responsible per-request limit
+    if (recipients.length > 30) {
       return res.status(400).json({
         success: false,
-        msg: "Maximum 40 emails per request"
+        msg: "Maximum 30 emails per request for account safety"
       });
     }
 
@@ -53,8 +53,13 @@ app.post("/send", async (req, res) => {
       auth: {
         user: gmail,
         pass: apppass
-      }
+      },
+      pool: true,
+      maxConnections: 2,
+      maxMessages: 50
     });
+
+    await transporter.verify();
 
     let sent = 0;
 
@@ -63,33 +68,23 @@ app.post("/send", async (req, res) => {
       await transporter.sendMail({
         from: `"${senderName}" <${gmail}>`,
         to: email,
-        subject: subject,
+        subject: subject,        // EXACT subject (no change)
         replyTo: gmail,
-        text: message,
+        text: message,           // EXACT message (no modification)
         html: `
-          <div style="font-family: Arial, Helvetica, sans-serif; line-height: 1.6; color: #333;">
-            <p>Dear Recipient,</p>
-
-            <p>${message.replace(/\n/g, "<br/>")}</p>
-
-            <br/>
-
-            <p>Kind regards,</p>
-            <p><strong>${senderName}</strong></p>
-
-            <hr style="margin-top:30px;"/>
-
-            <p style="font-size:12px;color:#777;">
-              This email was sent in response to a business communication.
-              If you received it in error, please disregard this message.
-            </p>
+          <div style="font-family: Arial, sans-serif; font-size:14px; color:#222; line-height:1.6;">
+            ${message.replace(/\n/g, "<br>")}
           </div>
-        `
+        `,
+        headers: {
+          "X-Mailer": "NodeMailer",
+          "X-Priority": "3"
+        }
       });
 
       sent++;
 
-      // Responsible sending delay (recommended minimum)
+      // Responsible sending delay
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
 
@@ -99,8 +94,7 @@ app.post("/send", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Send error:", error);
-
+    console.error("Send Error:", error);
     return res.status(500).json({
       success: false,
       msg: "Server error"
