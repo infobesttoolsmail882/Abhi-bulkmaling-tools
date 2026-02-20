@@ -1,108 +1,174 @@
-const express = require("express");
-const nodemailer = require("nodemailer");
-const path = require("path");
+import express from "express";
+import nodemailer from "nodemailer";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+/* =========================
+   BASIC SECURITY SETTINGS
+========================= */
+
+app.disable("x-powered-by");
+
+app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Health check
+/* =========================
+   ROOT ROUTE
+========================= */
+
 app.get("/", (req, res) => {
-  res.status(200).send("Server Running ✅");
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-// Send mail route
+/* =========================
+   SPEED SETTINGS (UNCHANGED)
+========================= */
+
+const HOURLY_LIMIT = 28;
+const PARALLEL = 3;
+const DELAY_MS = 120;
+
+/* =========================
+   MEMORY STATS (RESET HOURLY)
+========================= */
+
+let stats = {};
+setInterval(() => {
+  stats = {};
+}, 60 * 60 * 1000);
+
+/* =========================
+   CLEANERS
+========================= */
+
+const cleanText = t =>
+  (t || "")
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .slice(0, 5000);
+
+const cleanSubject = s =>
+  (s || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 150);
+
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* =========================
+   SAFE PARALLEL SENDER
+========================= */
+
+async function sendSafely(transporter, mails) {
+  let sent = 0;
+
+  for (let i = 0; i < mails.length; i += PARALLEL) {
+    const batch = mails.slice(i, i + PARALLEL);
+
+    const results = await Promise.allSettled(
+      batch.map(m => transporter.sendMail(m))
+    );
+
+    results.forEach(r => {
+      if (r.status === "fulfilled") {
+        sent++;
+      } else {
+        console.log("Send fail:", r.reason?.message);
+      }
+    });
+
+    await new Promise(r => setTimeout(r, DELAY_MS));
+  }
+
+  return sent;
+}
+
+/* =========================
+   SEND ROUTE
+========================= */
+
 app.post("/send", async (req, res) => {
   try {
-    const { senderName, gmail, apppass, subject, message, to } = req.body;
+    const { senderName, gmail, apppass, to, subject, message } = req.body;
 
-    // Strict validation
-    if (!senderName || !gmail || !apppass || !subject || !message || !to) {
-      return res.status(400).json({
-        success: false,
-        msg: "All fields are required"
-      });
+    /* Basic validation */
+    if (!gmail || !apppass || !to || !subject || !message) {
+      return res.json({ success: false, msg: "Missing fields ❌" });
     }
 
-    // Clean and validate recipients
+    if (!emailRegex.test(gmail)) {
+      return res.json({ success: false, msg: "Invalid Gmail ❌" });
+    }
+
+    /* Initialize stats */
+    if (!stats[gmail]) stats[gmail] = { count: 0 };
+
+    if (stats[gmail].count >= HOURLY_LIMIT) {
+      return res.json({ success: false, msg: "Hourly limit reached ❌" });
+    }
+
+    /* Clean recipients */
     const recipients = to
-      .split(/[\n,]+/)
-      .map(e => e.trim())
-      .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+      .split(/,|\n/)
+      .map(r => r.trim())
+      .filter(r => emailRegex.test(r));
 
     if (recipients.length === 0) {
-      return res.status(400).json({
-        success: false,
-        msg: "No valid email addresses found"
-      });
+      return res.json({ success: false, msg: "No valid recipients ❌" });
     }
 
-    // Safety limit (protect account reputation)
-    if (recipients.length > 25) {
-      return res.status(400).json({
-        success: false,
-        msg: "Maximum 25 emails per request for account safety"
-      });
+    const remaining = HOURLY_LIMIT - stats[gmail].count;
+
+    if (recipients.length > remaining) {
+      return res.json({ success: false, msg: "Limit full for this Gmail ❌" });
     }
 
+    /* Create transporter */
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
         user: gmail,
         pass: apppass
-      },
-      pool: true,
-      maxConnections: 2,
-      maxMessages: 100
+      }
     });
 
-    await transporter.verify();
-
-    let sent = 0;
-
-    for (const email of recipients) {
-
-      await transporter.sendMail({
-        from: `"${senderName}" <${gmail}>`,
-        to: email,
-        subject: subject,        // EXACT subject
-        replyTo: gmail,
-        text: message,           // EXACT text
-        html: `
-          <div style="font-family: Arial, sans-serif; font-size:14px; color:#222; line-height:1.6;">
-            ${message.replace(/\n/g, "<br>")}
-          </div>
-        `,
-        headers: {
-          "X-Mailer": "NodeMailer",
-          "Precedence": "bulk"
-        }
-      });
-
-      sent++;
-
-      // 3 second SAFE delay
-      await new Promise(resolve => setTimeout(resolve, 3000));
+    try {
+      await transporter.verify();
+    } catch (err) {
+      console.log("SMTP ERROR:", err.message);
+      return res.json({ success: false, msg: "Gmail login failed ❌" });
     }
 
-    return res.json({
-      success: true,
-      sent
-    });
+    /* Build emails */
+    const mails = recipients.map(r => ({
+      from: `"${senderName?.trim() || gmail}" <${gmail}>`,
+      to: r,
+      subject: cleanSubject(subject),
+      text: cleanText(message),
+      replyTo: gmail
+    }));
 
-  } catch (error) {
-    console.error("Send Error:", error);
-    return res.status(500).json({
-      success: false,
-      msg: "Server error"
-    });
+    const sent = await sendSafely(transporter, mails);
+
+    stats[gmail].count += sent;
+
+    return res.json({ success: true, sent });
+
+  } catch (err) {
+    console.log("SERVER ERROR:", err.message);
+    return res.json({ success: false, msg: "Server error ❌" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+/* =========================
+   START SERVER
+========================= */
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("✅ Safe Mail Server running");
 });
