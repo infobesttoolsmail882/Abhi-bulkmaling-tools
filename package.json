@@ -1,14 +1,9 @@
 {
-  "name": "clean-mail-server",
+  "name": "safe-mail-sender",
   "version": "1.0.0",
-  "description": "Secure and clean email sending server",
   "type": "module",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
   "dependencies": {
     "express": "^4.19.2",
-    "nodemailer": "^6.9.13"
+    "nodemailer": "^6.9.9"
   }
 }
