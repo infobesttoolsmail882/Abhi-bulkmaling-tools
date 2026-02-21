@@ -11,18 +11,18 @@ app.disable("x-powered-by");
 
 const PORT = process.env.PORT || 3000;
 
-/* =============================
-   SAFE BULK SETTINGS
-============================= */
+/* =========================
+   FAST SPEED SETTINGS
+========================= */
 
-const HOURLY_LIMIT = 100;        // total per hour
-const BATCH_SIZE = 5;            // parallel per batch
-const DELAY_BETWEEN_BATCH = 2000; // 2 sec gap
-const MAX_PER_REQUEST = 50;      // per API call
+const HOURLY_LIMIT = 80;   // safe but bulk capable
+const PARALLEL = 5;        // fast parallel sending
+const DELAY_MS = 120;      // same fast delay
+const MAX_PER_REQUEST = 60;
 
-/* =============================
+/* =========================
    MIDDLEWARE
-============================= */
+========================= */
 
 app.use(express.json({ limit: "200kb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -31,9 +31,9 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
-/* =============================
+/* =========================
    HOURLY MEMORY LIMIT
-============================= */
+========================= */
 
 let stats = {};
 
@@ -41,9 +41,9 @@ setInterval(() => {
   stats = {};
 }, 60 * 60 * 1000);
 
-/* =============================
+/* =========================
    HELPERS
-============================= */
+========================= */
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -55,15 +55,15 @@ const cleanSubject = s =>
 const cleanText = t =>
   (t || "").replace(/\r\n/g, "\n").trim().slice(0, 8000);
 
-/* =============================
-   BULK SAFE SENDER
-============================= */
+/* =========================
+   FAST PARALLEL SENDER
+========================= */
 
-async function sendBulk(transporter, mails) {
+async function sendFast(transporter, mails) {
   let sent = 0;
 
-  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
-    const batch = mails.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < mails.length; i += PARALLEL) {
+    const batch = mails.slice(i, i + PARALLEL);
 
     const results = await Promise.allSettled(
       batch.map(mail => transporter.sendMail(mail))
@@ -71,18 +71,18 @@ async function sendBulk(transporter, mails) {
 
     results.forEach(r => {
       if (r.status === "fulfilled") sent++;
-      else console.log("Send failed:", r.reason?.message);
+      else console.log("Send fail:", r.reason?.message);
     });
 
-    await sleep(DELAY_BETWEEN_BATCH);
+    await sleep(DELAY_MS);
   }
 
   return sent;
 }
 
-/* =============================
+/* =========================
    SEND ROUTE
-============================= */
+========================= */
 
 app.post("/send", async (req, res) => {
   try {
@@ -142,8 +142,8 @@ app.post("/send", async (req, res) => {
     const transporter = nodemailer.createTransport({
       service: "gmail",
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100,
+      maxConnections: 5,
+      maxMessages: 200,
       auth: {
         user: gmail,
         pass: apppass
@@ -160,7 +160,7 @@ app.post("/send", async (req, res) => {
       replyTo: gmail
     }));
 
-    const sent = await sendBulk(transporter, mails);
+    const sent = await sendFast(transporter, mails);
 
     stats[gmail].count += sent;
 
@@ -170,7 +170,7 @@ app.post("/send", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Server Error:", err.message);
+    console.error("SERVER ERROR:", err.message);
     return res.status(500).json({
       success: false,
       msg: "Server error"
@@ -178,10 +178,10 @@ app.post("/send", async (req, res) => {
   }
 });
 
-/* =============================
+/* =========================
    START SERVER
-============================= */
+========================= */
 
 app.listen(PORT, () => {
-  console.log("✅ Clean Bulk Mail Server Running");
+  console.log("✅ Fast & Clean Mail Server Running");
 });
