@@ -1,7 +1,7 @@
 {
-  "name": "safe-mail-server",
+  "name": "clean-mail-server",
   "version": "1.0.0",
-  "description": "Clean and secure mail sender",
+  "description": "Secure and clean email sending server",
   "type": "module",
   "main": "server.js",
   "scripts": {
