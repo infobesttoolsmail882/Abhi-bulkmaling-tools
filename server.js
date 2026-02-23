@@ -1,38 +1,46 @@
 require("dotenv").config();
+
 const express = require("express");
 const session = require("express-session");
-const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
 
-/* ================= CONFIG ================= */
+/* =========================
+   CONFIG
+========================= */
 
-const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || "replace-this-with-long-random-secret";
+const CONFIG = {
+  PORT: process.env.PORT || 8080,
+  ADMIN: "@##2588^$$^*O*^%%^",
+  SESSION_SECRET:
+    process.env.SESSION_SECRET || "replace-this-with-strong-secret",
+  MAX_PER_HOUR: 27
+};
 
-const MAX_PER_HOUR = 27;
+/* =========================
+   BASIC SECURITY HEADERS
+========================= */
 
-/* ================= SECURITY MIDDLEWARE ================= */
-
-// Basic security headers
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
 
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json({ limit: "10kb" }));
+/* =========================
+   MIDDLEWARE
+========================= */
+
+app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    secret: SESSION_SECRET,
+    secret: CONFIG.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -43,35 +51,41 @@ app.use(
   })
 );
 
-/* ================= IN-MEMORY LIMIT STORE ================= */
+/* =========================
+   RATE LIMIT STORE
+========================= */
 
 const mailLimits = new Map();
 
-function checkAndUpdateLimit(email) {
+function enforceLimit(email) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
-  if (!record || now - record.startTime > 60 * 60 * 1000) {
-    mailLimits.set(email, { count: 1, startTime: now });
-    return { allowed: true, remaining: MAX_PER_HOUR - 1 };
+  if (!record || now - record.timestamp > 3600000) {
+    mailLimits.set(email, { count: 1, timestamp: now });
+    return { allowed: true, remaining: CONFIG.MAX_PER_HOUR - 1 };
   }
 
-  if (record.count >= MAX_PER_HOUR) {
+  if (record.count >= CONFIG.MAX_PER_HOUR) {
     return { allowed: false, remaining: 0 };
   }
 
   record.count++;
-  return { allowed: true, remaining: MAX_PER_HOUR - record.count };
+  return { allowed: true, remaining: CONFIG.MAX_PER_HOUR - record.count };
 }
 
-/* ================= AUTH ================= */
+/* =========================
+   AUTH MIDDLEWARE
+========================= */
 
 function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN_CREDENTIAL) return next();
+  if (req.session.user === CONFIG.ADMIN) return next();
   return res.redirect("/");
 }
 
-/* ================= ROUTES ================= */
+/* =========================
+   ROUTES
+========================= */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
@@ -80,11 +94,8 @@ app.get("/", (req, res) => {
 app.post("/login", (req, res) => {
   const { username, password } = req.body || {};
 
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
-    req.session.user = ADMIN_CREDENTIAL;
+  if (username === CONFIG.ADMIN && password === CONFIG.ADMIN) {
+    req.session.user = CONFIG.ADMIN;
     return res.json({ success: true });
   }
 
@@ -102,7 +113,9 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND EMAIL ================= */
+/* =========================
+   SEND MAIL
+========================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -116,12 +129,12 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    const limit = checkAndUpdateLimit(email);
+    const limit = enforceLimit(email);
 
     if (!limit.allowed) {
       return res.json({
         success: false,
-        message: `Limit reached (${MAX_PER_HOUR}/hour)`
+        message: `Hourly limit reached (${CONFIG.MAX_PER_HOUR})`
       });
     }
 
@@ -129,10 +142,7 @@ app.post("/send", requireAuth, async (req, res) => {
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: {
-        user: email,
-        pass: password
-      }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
@@ -146,26 +156,31 @@ app.post("/send", requireAuth, async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Email sent. Remaining this hour: ${limit.remaining}`
+      message: `Sent successfully. Remaining: ${limit.remaining}`
     });
 
-  } catch (error) {
+  } catch (err) {
+    console.error("Mail Error:", err.message);
     return res.json({
       success: false,
-      message: "Failed to send email"
+      message: "Email sending failed"
     });
   }
 });
 
-/* ================= ERROR HANDLER ================= */
+/* =========================
+   GLOBAL ERROR HANDLER
+========================= */
 
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ success: false, message: "Server error" });
+  console.error("Server Error:", err);
+  res.status(500).json({ success: false });
 });
 
-/* ================= START ================= */
+/* =========================
+   START SERVER
+========================= */
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(CONFIG.PORT, () => {
+  console.log(`Server running on port ${CONFIG.PORT}`);
 });
