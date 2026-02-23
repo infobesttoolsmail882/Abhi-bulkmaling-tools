@@ -1,129 +1,86 @@
-// ================= IMPORTS =================
-require('dotenv').config();
-const express = require('express');
-const session = require('express-session');
-const bodyParser = require('body-parser');
-const nodemailer = require('nodemailer');
-const path = require('path');
+require("dotenv").config();
+const express = require("express");
+const session = require("express-session");
+const bodyParser = require("body-parser");
+const nodemailer = require("nodemailer");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ================= SECURE CONFIG =================
+// ================= CONFIG =================
 
-// Fixed login credentials (as requested)
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
 
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || "super-secure-session-secret-change-this";
+  process.env.SESSION_SECRET || "change-this-session-secret";
+
+// Per sender hourly limit
+const MAX_PER_HOUR = 27;
+const BATCH_SIZE = 5;          // same speed
+const BATCH_DELAY = 300;       // same delay
 
 // ================= GLOBAL STATE =================
 
-// Per-sender hourly mail limit
-let mailLimits = {};
-
-// Global launcher lock
-let launcherLocked = false;
-
-// Session store
-const sessionStore = new session.MemoryStore();
+let mailLimits = {}; // { email: { count, startTime } }
 
 // ================= MIDDLEWARE =================
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, "public")));
 
-// Secure session setup
 app.use(
   session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    store: sessionStore,
     cookie: {
-      maxAge: 60 * 60 * 1000, // 1 hour
       httpOnly: true,
-      sameSite: "lax"
+      sameSite: "lax",
+      maxAge: 60 * 60 * 1000
     }
   })
 );
 
-// ================= FULL RESET =================
-
-function fullServerReset() {
-  console.log("🔁 FULL LAUNCHER RESET");
-
-  launcherLocked = true;
-  mailLimits = {};
-
-  sessionStore.clear(() => {
-    console.log("🧹 All sessions cleared");
-  });
-
-  setTimeout(() => {
-    launcherLocked = false;
-    console.log("✅ Launcher unlocked");
-  }, 2000);
-}
-
-// ================= AUTH MIDDLEWARE =================
+// ================= AUTH =================
 
 function requireAuth(req, res, next) {
-  if (launcherLocked) return res.redirect('/');
   if (req.session.user === ADMIN_CREDENTIAL) return next();
-  return res.redirect('/');
+  return res.redirect("/");
 }
 
 // ================= ROUTES =================
 
-// Login page
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-// Login
-app.post('/login', (req, res) => {
+app.post("/login", (req, res) => {
   const { username, password } = req.body;
-
-  if (launcherLocked) {
-    return res.json({
-      success: false,
-      message: "⛔ Server resetting, try again shortly"
-    });
-  }
 
   if (
     username === ADMIN_CREDENTIAL &&
     password === ADMIN_CREDENTIAL
   ) {
     req.session.user = ADMIN_CREDENTIAL;
-
-    // Auto reset after 1 hour
-    setTimeout(fullServerReset, 60 * 60 * 1000);
-
     return res.json({ success: true });
   }
 
   return res.json({
     success: false,
-    message: "❌ Invalid credentials"
+    message: "Invalid credentials"
   });
 });
 
-// Launcher page
-app.get('/launcher', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'launcher.html'));
+app.get("/launcher", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
-// Logout
-app.post('/logout', (req, res) => {
+app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie('connect.sid');
-    res.json({
-      success: true,
-      message: "✅ Logged out successfully"
-    });
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
   });
 });
 
@@ -133,21 +90,23 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// SAME SPEED AS BEFORE
-async function sendBatch(transporter, mails, batchSize = 5) {
-  for (let i = 0; i < mails.length; i += batchSize) {
+async function sendBatch(transporter, mails) {
+  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     await Promise.allSettled(
-      mails.slice(i, i + batchSize).map(mail => transporter.sendMail(mail))
+      mails.slice(i, i + BATCH_SIZE).map(mail =>
+        transporter.sendMail(mail)
+      )
     );
-    await delay(300); // SAME DELAY
+    await delay(BATCH_DELAY);
   }
 }
 
 // ================= SEND MAIL =================
 
-app.post('/send', requireAuth, async (req, res) => {
+app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } = req.body;
+    const { senderName, email, password, recipients, subject, message } =
+      req.body;
 
     if (!email || !password || !recipients) {
       return res.json({
@@ -158,8 +117,11 @@ app.post('/send', requireAuth, async (req, res) => {
 
     const now = Date.now();
 
-    // Reset hourly limit
-    if (!mailLimits[email] || now - mailLimits[email].startTime > 60 * 60 * 1000) {
+    // Reset hourly limit if needed
+    if (
+      !mailLimits[email] ||
+      now - mailLimits[email].startTime > 60 * 60 * 1000
+    ) {
       mailLimits[email] = { count: 0, startTime: now };
     }
 
@@ -175,10 +137,16 @@ app.post('/send', requireAuth, async (req, res) => {
       });
     }
 
-    if (mailLimits[email].count + recipientList.length > 27) {
+    // Check limit
+    if (
+      mailLimits[email].count + recipientList.length >
+      MAX_PER_HOUR
+    ) {
       return res.json({
         success: false,
-        message: `❌ Max 27 mails/hour | Remaining: ${27 - mailLimits[email].count}`
+        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${
+          MAX_PER_HOUR - mailLimits[email].count
+        }`
       });
     }
 
@@ -198,19 +166,19 @@ app.post('/send', requireAuth, async (req, res) => {
       text: message || ""
     }));
 
-    await sendBatch(transporter, mails, 5);
+    await sendBatch(transporter, mails);
 
     mailLimits[email].count += recipientList.length;
 
     return res.json({
       success: true,
-      message: `✅ Sent ${recipientList.length} | Used ${mailLimits[email].count}/27`
+      message: `Sent ${recipientList.length} | Used ${mailLimits[email].count}/${MAX_PER_HOUR}`
     });
 
   } catch (err) {
     return res.json({
       success: false,
-      message: "❌ " + err.message
+      message: err.message
     });
   }
 });
@@ -218,5 +186,5 @@ app.post('/send', requireAuth, async (req, res) => {
 // ================= START =================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Mail Launcher running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
