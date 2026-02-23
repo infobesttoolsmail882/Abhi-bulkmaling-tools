@@ -15,15 +15,6 @@ const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
 const SESSION_SECRET =
   process.env.SESSION_SECRET || "change-this-session-secret";
 
-// Per sender hourly limit
-const MAX_PER_HOUR = 27;
-const BATCH_SIZE = 5;          // same speed
-const BATCH_DELAY = 300;       // same delay
-
-// ================= GLOBAL STATE =================
-
-let mailLimits = {}; // { email: { count, startTime } }
-
 // ================= MIDDLEWARE =================
 
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -53,7 +44,7 @@ function requireAuth(req, res, next) {
 // ================= ROUTES =================
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/login.html"));
+  res.sendFile(path.join(__dirname, "public", "login.html"));
 });
 
 app.post("/login", (req, res) => {
@@ -74,7 +65,7 @@ app.post("/login", (req, res) => {
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "public/launcher.html"));
+  res.sendFile(path.join(__dirname, "public", "launcher.html"));
 });
 
 app.post("/logout", (req, res) => {
@@ -84,69 +75,17 @@ app.post("/logout", (req, res) => {
   });
 });
 
-// ================= HELPERS =================
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function sendBatch(transporter, mails) {
-  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
-    await Promise.allSettled(
-      mails.slice(i, i + BATCH_SIZE).map(mail =>
-        transporter.sendMail(mail)
-      )
-    );
-    await delay(BATCH_DELAY);
-  }
-}
-
-// ================= SEND MAIL =================
+// ================= SEND EMAIL =================
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } =
+    const { senderName, email, password, recipient, subject, message } =
       req.body;
 
-    if (!email || !password || !recipients) {
+    if (!email || !password || !recipient) {
       return res.json({
         success: false,
-        message: "Email, password and recipients required"
-      });
-    }
-
-    const now = Date.now();
-
-    // Reset hourly limit if needed
-    if (
-      !mailLimits[email] ||
-      now - mailLimits[email].startTime > 60 * 60 * 1000
-    ) {
-      mailLimits[email] = { count: 0, startTime: now };
-    }
-
-    const recipientList = recipients
-      .split(/[\n,]+/)
-      .map(r => r.trim())
-      .filter(Boolean);
-
-    if (recipientList.length === 0) {
-      return res.json({
-        success: false,
-        message: "No valid recipients"
-      });
-    }
-
-    // Check limit
-    if (
-      mailLimits[email].count + recipientList.length >
-      MAX_PER_HOUR
-    ) {
-      return res.json({
-        success: false,
-        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${
-          MAX_PER_HOUR - mailLimits[email].count
-        }`
+        message: "Email, password and recipient required"
       });
     }
 
@@ -154,25 +93,24 @@ app.post("/send", requireAuth, async (req, res) => {
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: { user: email, pass: password }
+      auth: {
+        user: email,
+        pass: password
+      }
     });
 
     await transporter.verify();
 
-    const mails = recipientList.map(r => ({
+    await transporter.sendMail({
       from: `"${senderName || "Anonymous"}" <${email}>`,
-      to: r,
+      to: recipient,
       subject: subject || "Quick Note",
       text: message || ""
-    }));
-
-    await sendBatch(transporter, mails);
-
-    mailLimits[email].count += recipientList.length;
+    });
 
     return res.json({
       success: true,
-      message: `Sent ${recipientList.length} | Used ${mailLimits[email].count}/${MAX_PER_HOUR}`
+      message: "Email sent successfully"
     });
 
   } catch (err) {
