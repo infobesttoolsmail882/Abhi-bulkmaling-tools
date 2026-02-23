@@ -11,9 +11,14 @@ const PORT = process.env.PORT || 8080;
 // ================= CONFIG =================
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
-
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || "change-this-session-secret";
+  process.env.SESSION_SECRET || "change-this-secret";
+
+const MAX_PER_HOUR = 27;
+
+// In-memory limit store
+// { email: { count: number, startTime: timestamp } }
+let mailLimits = {};
 
 // ================= MIDDLEWARE =================
 
@@ -44,7 +49,7 @@ function requireAuth(req, res, next) {
 // ================= ROUTES =================
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
+  res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
 app.post("/login", (req, res) => {
@@ -65,7 +70,7 @@ app.post("/login", (req, res) => {
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "launcher.html"));
+  res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
 app.post("/logout", (req, res) => {
@@ -75,7 +80,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-// ================= SEND EMAIL =================
+// ================= SEND MAIL =================
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -86,6 +91,23 @@ app.post("/send", requireAuth, async (req, res) => {
       return res.json({
         success: false,
         message: "Email, password and recipient required"
+      });
+    }
+
+    const now = Date.now();
+
+    // Reset limit after 1 hour
+    if (
+      !mailLimits[email] ||
+      now - mailLimits[email].startTime > 60 * 60 * 1000
+    ) {
+      mailLimits[email] = { count: 0, startTime: now };
+    }
+
+    if (mailLimits[email].count >= MAX_PER_HOUR) {
+      return res.json({
+        success: false,
+        message: `Limit reached: ${MAX_PER_HOUR}/hour`
       });
     }
 
@@ -108,9 +130,11 @@ app.post("/send", requireAuth, async (req, res) => {
       text: message || ""
     });
 
+    mailLimits[email].count++;
+
     return res.json({
       success: true,
-      message: "Email sent successfully"
+      message: `Sent successfully (${mailLimits[email].count}/${MAX_PER_HOUR})`
     });
 
   } catch (err) {
