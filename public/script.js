@@ -1,53 +1,49 @@
-if (!sessionStorage.getItem("auth")) location.href = "/login.html";
-
-let sending = false;
-
-const sendBtn = document.getElementById("sendBtn");
-const logoutBtn = document.getElementById("logoutBtn");
-
-sendBtn.onclick = () => { if (!sending) sendMail(); };
-
-logoutBtn.ondblclick = () => {
-  if (!sending) {
-    sessionStorage.clear();
-    location.href = "/login.html";
-  }
-};
-
-async function sendMail() {
-  sending = true;
-  sendBtn.disabled = true;
-  sendBtn.innerText = "Sending…";
-
-  try {
-    const res = await fetch("/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        senderName: senderName.value.trim(),
-        gmail: gmail.value.trim(),
-        apppass: apppass.value.trim(),
-        subject: subject.value.trim(),
-        message: message.value.trim(),
-        to: to.value.trim()
-      })
-    });
-
-    const data = await res.json();
-
-    if (!data.success) {
-      alert(data.msg || "Sending failed ❌");
-      return;
-    }
-
-    alert(`Send_1 ✅\nEmails Sent: ${data.sent}`);
-
-  } catch (err) {
-    alert("Server error ❌");
-  } finally {
-    // 🔥 ALWAYS reset button — success OR error
-    sending = false;
-    sendBtn.disabled = false;
-    sendBtn.innerText = "Send All";
-  }
+function logout() {
+  fetch('/logout', { method: 'POST' })
+    .then(() => window.location.href = '/');
 }
+
+document.getElementById('sendBtn')?.addEventListener('click', () => {
+  const senderName = document.getElementById('senderName').value;
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('pass').value.trim();
+  const subject = document.getElementById('subject').value;
+  const message = document.getElementById('message').value;
+  const recipients = document.getElementById('recipients').value.trim();
+  const status = document.getElementById('statusMessage');
+
+  if (!email || !password || !recipients) {
+    status.innerText = '❌ Email, password and recipients required';
+    alert('❌ Email, password and recipients required');
+    return;
+  }
+
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+  btn.innerText = '⏳ Sending...';
+
+  fetch('/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ senderName, email, password, subject, message, recipients })
+  })
+    .then(r => r.json())
+    .then(data => {
+      status.innerText = data.message;
+
+      if (data.success) {
+        alert('✅ Mail sent successfully!');
+      } else {
+        alert('❌ Failed: ' + data.message);
+      }
+
+      btn.disabled = false;
+      btn.innerText = 'Send All';
+    })
+    .catch(err => {
+      status.innerText = '❌ Error: ' + err.message;
+      alert('❌ Error: ' + err.message);
+      btn.disabled = false;
+      btn.innerText = 'Send All';
+    });
+});
