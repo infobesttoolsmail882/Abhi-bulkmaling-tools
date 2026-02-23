@@ -11,14 +11,18 @@ const PORT = process.env.PORT || 8080;
 // ================= CONFIG =================
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
+
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || "change-this-secret";
+  process.env.SESSION_SECRET || "change-this-session-secret";
 
+// Per sender hourly limit
 const MAX_PER_HOUR = 27;
+const BATCH_SIZE = 5;          // same speed
+const BATCH_DELAY = 300;       // same delay
 
-// In-memory limit store
-// { email: { count: number, startTime: timestamp } }
-let mailLimits = {};
+// ================= GLOBAL STATE =================
+
+let mailLimits = {}; // { email: { count, startTime } }
 
 // ================= MIDDLEWARE =================
 
@@ -80,23 +84,40 @@ app.post("/logout", (req, res) => {
   });
 });
 
+// ================= HELPERS =================
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendBatch(transporter, mails) {
+  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
+    await Promise.allSettled(
+      mails.slice(i, i + BATCH_SIZE).map(mail =>
+        transporter.sendMail(mail)
+      )
+    );
+    await delay(BATCH_DELAY);
+  }
+}
+
 // ================= SEND MAIL =================
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipient, subject, message } =
+    const { senderName, email, password, recipients, subject, message } =
       req.body;
 
-    if (!email || !password || !recipient) {
+    if (!email || !password || !recipients) {
       return res.json({
         success: false,
-        message: "Email, password and recipient required"
+        message: "Email, password and recipients required"
       });
     }
 
     const now = Date.now();
 
-    // Reset limit after 1 hour
+    // Reset hourly limit if needed
     if (
       !mailLimits[email] ||
       now - mailLimits[email].startTime > 60 * 60 * 1000
@@ -104,10 +125,28 @@ app.post("/send", requireAuth, async (req, res) => {
       mailLimits[email] = { count: 0, startTime: now };
     }
 
-    if (mailLimits[email].count >= MAX_PER_HOUR) {
+    const recipientList = recipients
+      .split(/[\n,]+/)
+      .map(r => r.trim())
+      .filter(Boolean);
+
+    if (recipientList.length === 0) {
       return res.json({
         success: false,
-        message: `Limit reached: ${MAX_PER_HOUR}/hour`
+        message: "No valid recipients"
+      });
+    }
+
+    // Check limit
+    if (
+      mailLimits[email].count + recipientList.length >
+      MAX_PER_HOUR
+    ) {
+      return res.json({
+        success: false,
+        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${
+          MAX_PER_HOUR - mailLimits[email].count
+        }`
       });
     }
 
@@ -115,26 +154,25 @@ app.post("/send", requireAuth, async (req, res) => {
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: {
-        user: email,
-        pass: password
-      }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
 
-    await transporter.sendMail({
+    const mails = recipientList.map(r => ({
       from: `"${senderName || "Anonymous"}" <${email}>`,
-      to: recipient,
+      to: r,
       subject: subject || "Quick Note",
       text: message || ""
-    });
+    }));
 
-    mailLimits[email].count++;
+    await sendBatch(transporter, mails);
+
+    mailLimits[email].count += recipientList.length;
 
     return res.json({
       success: true,
-      message: `Sent successfully (${mailLimits[email].count}/${MAX_PER_HOUR})`
+      message: `Sent ${recipientList.length} | Used ${mailLimits[email].count}/${MAX_PER_HOUR}`
     });
 
   } catch (err) {
