@@ -1,5 +1,4 @@
 require("dotenv").config();
-
 const express = require("express");
 const session = require("express-session");
 const nodemailer = require("nodemailer");
@@ -7,21 +6,16 @@ const path = require("path");
 
 const app = express();
 
-/* =========================
-   CONFIG
-========================= */
+/* ================= CONFIG ================= */
 
 const CONFIG = {
   PORT: process.env.PORT || 8080,
   ADMIN: "@##2588^$$^*O*^%%^",
-  SESSION_SECRET:
-    process.env.SESSION_SECRET || "replace-this-with-strong-secret",
+  SESSION_SECRET: process.env.SESSION_SECRET || "change-this-secret",
   MAX_PER_HOUR: 27
 };
 
-/* =========================
-   BASIC SECURITY HEADERS
-========================= */
+/* ================= BASIC SECURITY ================= */
 
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -30,9 +24,7 @@ app.use((req, res, next) => {
   next();
 });
 
-/* =========================
-   MIDDLEWARE
-========================= */
+/* ================= MIDDLEWARE ================= */
 
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false }));
@@ -51,41 +43,35 @@ app.use(
   })
 );
 
-/* =========================
-   RATE LIMIT STORE
-========================= */
+/* ================= LIMIT STORE ================= */
 
 const mailLimits = new Map();
 
-function enforceLimit(email) {
+function checkLimit(email) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
   if (!record || now - record.timestamp > 3600000) {
     mailLimits.set(email, { count: 1, timestamp: now });
-    return { allowed: true, remaining: CONFIG.MAX_PER_HOUR - 1 };
+    return true;
   }
 
   if (record.count >= CONFIG.MAX_PER_HOUR) {
-    return { allowed: false, remaining: 0 };
+    return false;
   }
 
   record.count++;
-  return { allowed: true, remaining: CONFIG.MAX_PER_HOUR - record.count };
+  return true;
 }
 
-/* =========================
-   AUTH MIDDLEWARE
-========================= */
+/* ================= AUTH ================= */
 
 function requireAuth(req, res, next) {
   if (req.session.user === CONFIG.ADMIN) return next();
   return res.redirect("/");
 }
 
-/* =========================
-   ROUTES
-========================= */
+/* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
@@ -113,28 +99,42 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* =========================
-   SEND MAIL
-========================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipient, subject, message } =
-      req.body || {};
+    const {
+      senderName,
+      email,
+      password,
+      recipients,
+      subject,
+      message
+    } = req.body || {};
 
-    if (!email || !password || !recipient) {
+    if (!email || !password || !recipients) {
       return res.json({
         success: false,
-        message: "Email, password and recipient required"
+        message: "Email, password and recipients required"
       });
     }
 
-    const limit = enforceLimit(email);
-
-    if (!limit.allowed) {
+    if (!checkLimit(email)) {
       return res.json({
         success: false,
         message: `Hourly limit reached (${CONFIG.MAX_PER_HOUR})`
+      });
+    }
+
+    const recipientList = recipients
+      .split("\n")
+      .map(r => r.trim())
+      .filter(Boolean);
+
+    if (recipientList.length === 0) {
+      return res.json({
+        success: false,
+        message: "No valid recipients found"
       });
     }
 
@@ -147,16 +147,18 @@ app.post("/send", requireAuth, async (req, res) => {
 
     await transporter.verify();
 
-    await transporter.sendMail({
-      from: `"${senderName || "Anonymous"}" <${email}>`,
-      to: recipient,
-      subject: subject || "Quick Note",
-      text: message || ""
-    });
+    for (const to of recipientList) {
+      await transporter.sendMail({
+        from: `"${senderName || "Anonymous"}" <${email}>`,
+        to,
+        subject: subject || "Quick Note",
+        text: message || ""
+      });
+    }
 
     return res.json({
       success: true,
-      message: `Sent successfully. Remaining: ${limit.remaining}`
+      message: `Sent to ${recipientList.length} recipient(s)`
     });
 
   } catch (err) {
@@ -168,18 +170,7 @@ app.post("/send", requireAuth, async (req, res) => {
   }
 });
 
-/* =========================
-   GLOBAL ERROR HANDLER
-========================= */
-
-app.use((err, req, res, next) => {
-  console.error("Server Error:", err);
-  res.status(500).json({ success: false });
-});
-
-/* =========================
-   START SERVER
-========================= */
+/* ================= START ================= */
 
 app.listen(CONFIG.PORT, () => {
   console.log(`Server running on port ${CONFIG.PORT}`);
