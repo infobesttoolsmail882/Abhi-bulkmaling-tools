@@ -8,22 +8,26 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ================= CONFIG =================
+/* ================= CONFIG ================= */
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || "change-this-secret";
+  process.env.SESSION_SECRET || "replace-this-with-long-random-secret";
 
 const MAX_PER_HOUR = 27;
 
-// In-memory limit store
-// { email: { count: number, startTime: timestamp } }
-let mailLimits = {};
+/* ================= SECURITY MIDDLEWARE ================= */
 
-// ================= MIDDLEWARE =================
+// Basic security headers
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  next();
+});
 
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -39,21 +43,42 @@ app.use(
   })
 );
 
-// ================= AUTH =================
+/* ================= IN-MEMORY LIMIT STORE ================= */
+
+const mailLimits = new Map();
+
+function checkAndUpdateLimit(email) {
+  const now = Date.now();
+  const record = mailLimits.get(email);
+
+  if (!record || now - record.startTime > 60 * 60 * 1000) {
+    mailLimits.set(email, { count: 1, startTime: now });
+    return { allowed: true, remaining: MAX_PER_HOUR - 1 };
+  }
+
+  if (record.count >= MAX_PER_HOUR) {
+    return { allowed: false, remaining: 0 };
+  }
+
+  record.count++;
+  return { allowed: true, remaining: MAX_PER_HOUR - record.count };
+}
+
+/* ================= AUTH ================= */
 
 function requireAuth(req, res, next) {
   if (req.session.user === ADMIN_CREDENTIAL) return next();
   return res.redirect("/");
 }
 
-// ================= ROUTES =================
+/* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
 app.post("/login", (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
 
   if (
     username === ADMIN_CREDENTIAL &&
@@ -63,10 +88,7 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({
-    success: false,
-    message: "Invalid credentials"
-  });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -80,12 +102,12 @@ app.post("/logout", (req, res) => {
   });
 });
 
-// ================= SEND MAIL =================
+/* ================= SEND EMAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipient, subject, message } =
-      req.body;
+      req.body || {};
 
     if (!email || !password || !recipient) {
       return res.json({
@@ -94,20 +116,12 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    const now = Date.now();
+    const limit = checkAndUpdateLimit(email);
 
-    // Reset limit after 1 hour
-    if (
-      !mailLimits[email] ||
-      now - mailLimits[email].startTime > 60 * 60 * 1000
-    ) {
-      mailLimits[email] = { count: 0, startTime: now };
-    }
-
-    if (mailLimits[email].count >= MAX_PER_HOUR) {
+    if (!limit.allowed) {
       return res.json({
         success: false,
-        message: `Limit reached: ${MAX_PER_HOUR}/hour`
+        message: `Limit reached (${MAX_PER_HOUR}/hour)`
       });
     }
 
@@ -130,22 +144,27 @@ app.post("/send", requireAuth, async (req, res) => {
       text: message || ""
     });
 
-    mailLimits[email].count++;
-
     return res.json({
       success: true,
-      message: `Sent successfully (${mailLimits[email].count}/${MAX_PER_HOUR})`
+      message: `Email sent. Remaining this hour: ${limit.remaining}`
     });
 
-  } catch (err) {
+  } catch (error) {
     return res.json({
       success: false,
-      message: err.message
+      message: "Failed to send email"
     });
   }
 });
 
-// ================= START =================
+/* ================= ERROR HANDLER ================= */
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ success: false, message: "Server error" });
+});
+
+/* ================= START ================= */
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
