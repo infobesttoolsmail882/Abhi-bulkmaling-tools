@@ -55,13 +55,21 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function sanitizeText(text = "") {
+// Clean formatting (NOT keyword bypass)
+function normalizeText(text = "") {
   return text
-    .replace(/<[^>]*>/g, "")         // remove HTML
-    .replace(/[^\x00-\x7F]/g, "")    // remove unicode spam chars
-    .replace(/(.)\1{5,}/g, "$1$1")   // remove excessive repeated chars
+    .replace(/<[^>]*>/g, "")          // remove HTML
+    .replace(/[^\x00-\x7F]/g, "")     // remove unicode junk
+    .replace(/(.)\1{4,}/g, "$1$1")    // limit repeated chars
+    .replace(/[!]{3,}/g, "!!")       // limit excessive !
+    .replace(/[?]{3,}/g, "??")       // limit excessive ?
     .trim()
-    .slice(0, 1000);                 // max length control
+    .slice(0, 1000);
+}
+
+function normalizeSubject(subject = "") {
+  const clean = normalizeText(subject).slice(0, 150);
+  return clean.length < 3 ? "Quick Note" : clean;
 }
 
 function checkLimit(email, amount) {
@@ -75,20 +83,24 @@ function checkLimit(email, amount) {
   const updated = mailLimits.get(email);
 
   if (updated.count + amount > MAX_PER_HOUR) {
-    return false;
+    return {
+      allowed: false,
+      remaining: MAX_PER_HOUR - updated.count
+    };
   }
 
   updated.count += amount;
-  return true;
+  return { allowed: true };
 }
 
 async function sendBatch(transporter, mails) {
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
+    const chunk = mails.slice(i, i + BATCH_SIZE);
+
     await Promise.allSettled(
-      mails.slice(i, i + BATCH_SIZE).map(m =>
-        transporter.sendMail(m)
-      )
+      chunk.map(mail => transporter.sendMail(mail))
     );
+
     await delay(BATCH_DELAY);
   }
 }
@@ -170,15 +182,18 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    if (!checkLimit(email, recipientList.length)) {
+    const limitCheck = checkLimit(email, recipientList.length);
+
+    if (!limitCheck.allowed) {
       return res.json({
         success: false,
         message: `Max ${MAX_PER_HOUR}/hour exceeded`
       });
     }
 
-    const cleanSubject = sanitizeText(subject || "Quick Note");
-    const cleanMessage = sanitizeText(message || "");
+    const cleanSubject = normalizeSubject(subject);
+    const cleanMessage = normalizeText(message);
+    const cleanSender = normalizeText(senderName).slice(0, 50);
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -190,7 +205,7 @@ app.post("/send", requireAuth, async (req, res) => {
     await transporter.verify();
 
     const mails = recipientList.map(to => ({
-      from: `"${sanitizeText(senderName) || "Anonymous"}" <${email}>`,
+      from: `"${cleanSender || "Sender"}" <${email}>`,
       to,
       subject: cleanSubject,
       text: cleanMessage
@@ -200,7 +215,9 @@ app.post("/send", requireAuth, async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Sent ${recipientList.length}`
+      message: `Sent ${recipientList.length} | Used ${
+        mailLimits.get(email).count
+      }/${MAX_PER_HOUR}`
     });
 
   } catch (err) {
