@@ -17,9 +17,6 @@ const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
 
-/* ================= STATE ================= */
-
-// Safer Map instead of plain object
 const mailLimits = new Map();
 
 /* ================= MIDDLEWARE ================= */
@@ -41,20 +38,12 @@ app.use(
   })
 );
 
-// Basic security headers
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
-
-/* ================= AUTH ================= */
-
-function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN_CREDENTIAL) return next();
-  return res.redirect("/");
-}
 
 /* ================= HELPERS ================= */
 
@@ -66,7 +55,16 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function checkHourlyLimit(email, amount) {
+function sanitizeText(text = "") {
+  return text
+    .replace(/<[^>]*>/g, "")         // remove HTML
+    .replace(/[^\x00-\x7F]/g, "")    // remove unicode spam chars
+    .replace(/(.)\1{5,}/g, "$1$1")   // remove excessive repeated chars
+    .trim()
+    .slice(0, 1000);                 // max length control
+}
+
+function checkLimit(email, amount) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
@@ -77,26 +75,29 @@ function checkHourlyLimit(email, amount) {
   const updated = mailLimits.get(email);
 
   if (updated.count + amount > MAX_PER_HOUR) {
-    return {
-      allowed: false,
-      remaining: MAX_PER_HOUR - updated.count
-    };
+    return false;
   }
 
   updated.count += amount;
-  return { allowed: true };
+  return true;
 }
 
 async function sendBatch(transporter, mails) {
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
-    const chunk = mails.slice(i, i + BATCH_SIZE);
-
     await Promise.allSettled(
-      chunk.map(mail => transporter.sendMail(mail))
+      mails.slice(i, i + BATCH_SIZE).map(m =>
+        transporter.sendMail(m)
+      )
     );
-
     await delay(BATCH_DELAY);
   }
+}
+
+/* ================= AUTH ================= */
+
+function requireAuth(req, res, next) {
+  if (req.session.user === ADMIN_CREDENTIAL) return next();
+  return res.redirect("/");
 }
 
 /* ================= ROUTES ================= */
@@ -116,10 +117,7 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({
-    success: false,
-    message: "Invalid credentials"
-  });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -133,7 +131,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND MAIL ================= */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -156,7 +154,7 @@ app.post("/send", requireAuth, async (req, res) => {
     if (!isValidEmail(email)) {
       return res.json({
         success: false,
-        message: "Invalid sender email format"
+        message: "Invalid sender email"
       });
     }
 
@@ -172,14 +170,15 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    const limitCheck = checkHourlyLimit(email, recipientList.length);
-
-    if (!limitCheck.allowed) {
+    if (!checkLimit(email, recipientList.length)) {
       return res.json({
         success: false,
-        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${limitCheck.remaining}`
+        message: `Max ${MAX_PER_HOUR}/hour exceeded`
       });
     }
+
+    const cleanSubject = sanitizeText(subject || "Quick Note");
+    const cleanMessage = sanitizeText(message || "");
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -191,32 +190,26 @@ app.post("/send", requireAuth, async (req, res) => {
     await transporter.verify();
 
     const mails = recipientList.map(to => ({
-      from: `"${senderName || "Anonymous"}" <${email}>`,
+      from: `"${sanitizeText(senderName) || "Anonymous"}" <${email}>`,
       to,
-      subject: subject || "Quick Note",
-      text: message || ""
+      subject: cleanSubject,
+      text: cleanMessage
     }));
 
     await sendBatch(transporter, mails);
 
     return res.json({
       success: true,
-      message: `Sent ${recipientList.length} | Used ${
-        mailLimits.get(email).count
-      }/${MAX_PER_HOUR}`
+      message: `Sent ${recipientList.length}`
     });
 
   } catch (err) {
-    console.error("Send error:", err.message);
-
     return res.json({
       success: false,
       message: "Email sending failed"
     });
   }
 });
-
-/* ================= START ================= */
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
