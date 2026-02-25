@@ -29,40 +29,47 @@ const ipRateLimit = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
+app.set("trust proxy", 1);
+
 app.use(express.json({ limit: MAX_BODY_SIZE }));
 app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
+    name: "fastmail.sid",
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
+      secure: false,
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
   })
 );
 
-// Basic security headers
+/* ================= SECURITY HEADERS ================= */
+
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Permissions-Policy", "geolocation=()");
   next();
 });
 
-// Basic IP rate limit (anti abuse)
+/* ================= BASIC IP RATE LIMIT ================= */
+
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
   const record = ipRateLimit.get(ip);
 
-  if (!record || now - record.startTime > 60000) {
-    ipRateLimit.set(ip, { count: 1, startTime: now });
+  if (!record || now - record.start > 60000) {
+    ipRateLimit.set(ip, { count: 1, start: now });
     return next();
   }
 
@@ -84,7 +91,7 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function normalizeText(text = "") {
+function cleanText(text = "") {
   return text
     .replace(/<[^>]*>/g, "")
     .replace(/[^\x00-\x7F]/g, "")
@@ -99,8 +106,8 @@ function checkHourlyLimit(email, amount) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
-  if (!record || now - record.startTime > 3600000) {
-    mailLimits.set(email, { count: 0, startTime: now });
+  if (!record || now - record.start > 3600000) {
+    mailLimits.set(email, { count: 0, start: now });
   }
 
   const updated = mailLimits.get(email);
@@ -144,13 +151,10 @@ app.post("/login", (req, res) => {
   const record = loginAttempts.get(ip);
 
   if (record && record.blockUntil > now) {
-    return res.json({ success: false, message: "Try again later" });
+    return res.json({ success: false, message: "Try later" });
   }
 
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
+  if (username === ADMIN_CREDENTIAL && password === ADMIN_CREDENTIAL) {
     loginAttempts.delete(ip);
     req.session.user = ADMIN_CREDENTIAL;
     return res.json({ success: true });
@@ -165,7 +169,7 @@ app.post("/login", (req, res) => {
     }
   }
 
-  return res.json({ success: false, message: "Invalid credentials" });
+  return res.json({ success: false });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -174,30 +178,23 @@ app.get("/launcher", requireAuth, (req, res) => {
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+    res.clearCookie("fastmail.sid");
     res.json({ success: true });
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const {
-      senderName,
-      email,
-      password,
-      recipients,
-      subject,
-      message
-    } = req.body || {};
+    const { senderName, email, password, recipients, subject, message } = req.body || {};
 
     if (!email || !password || !recipients) {
-      return res.json({ success: false, message: "Missing fields" });
+      return res.json({ success: false });
     }
 
     if (!isValidEmail(email)) {
-      return res.json({ success: false, message: "Invalid email" });
+      return res.json({ success: false });
     }
 
     const recipientList = [
@@ -209,15 +206,12 @@ app.post("/send", requireAuth, async (req, res) => {
       )
     ];
 
-    if (recipientList.length === 0) {
-      return res.json({ success: false, message: "No valid recipients" });
+    if (!recipientList.length) {
+      return res.json({ success: false });
     }
 
     if (!checkHourlyLimit(email, recipientList.length)) {
-      return res.json({
-        success: false,
-        message: `Max ${MAX_PER_HOUR}/hour exceeded`
-      });
+      return res.json({ success: false, message: "Limit exceeded" });
     }
 
     const transporter = nodemailer.createTransport({
@@ -230,29 +224,42 @@ app.post("/send", requireAuth, async (req, res) => {
     await transporter.verify();
 
     const mails = recipientList.map(to => ({
-      from: `"${normalizeText(senderName).slice(0,50) || "Sender"}" <${email}>`,
+      from: `"${cleanText(senderName).slice(0, 50) || "Sender"}" <${email}>`,
       to,
-      subject: normalizeText(subject).slice(0,150) || "Quick Note",
-      text: normalizeText(message)
+      subject: cleanText(subject).slice(0, 150) || "Message",
+      text: cleanText(message)
     }));
 
     await sendBatch(transporter, mails);
 
-    return res.json({
-      success: true,
-      message: `Sent ${recipientList.length}`
-    });
+    return res.json({ success: true, sent: recipientList.length });
 
   } catch (err) {
-    return res.json({
-      success: false,
-      message: "Email sending failed"
-    });
+    return res.json({ success: false });
   }
 });
+
+/* ================= CLEANUP MEMORY ================= */
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [email, record] of mailLimits.entries()) {
+    if (now - record.start > 3600000) {
+      mailLimits.delete(email);
+    }
+  }
+
+  for (const [ip, record] of loginAttempts.entries()) {
+    if (record.blockUntil && now > record.blockUntil) {
+      loginAttempts.delete(ip);
+    }
+  }
+
+}, 10 * 60 * 1000);
 
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
