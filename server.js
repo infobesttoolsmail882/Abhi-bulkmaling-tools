@@ -1,8 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
-const path = require("path");
 const nodemailer = require("nodemailer");
+const path = require("path");
 const crypto = require("crypto");
 
 const app = express();
@@ -10,7 +10,9 @@ const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-const ADMIN_KEY = process.env.ADMIN_KEY || "@@2588";
+// 🔐 Login ID & Password SAME
+const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
+
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
@@ -24,7 +26,7 @@ const mailLimits = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
-app.use(express.json({ limit: "50kb" }));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -45,7 +47,9 @@ app.use(
 /* ================= AUTH ================= */
 
 function requireAuth(req, res, next) {
-  if (req.session?.auth === true) return next();
+  if (req.session && req.session.user === ADMIN_CREDENTIAL) {
+    return next();
+  }
   return res.redirect("/");
 }
 
@@ -55,28 +59,32 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-/* -------- LOGIN FIXED -------- */
+/* ===== LOGIN FIXED (USERNAME + PASSWORD) ===== */
 app.post("/login", (req, res) => {
-  const { key } = req.body;
+  const { username, password } = req.body;
 
-  if (!key) {
-    return res.status(400).json({
+  if (!username || !password) {
+    return res.json({
       success: false,
-      message: "Key required"
+      message: "Both fields required"
     });
   }
 
-  if (key === ADMIN_KEY) {
-    req.session.auth = true;
+  if (
+    username === ADMIN_CREDENTIAL &&
+    password === ADMIN_CREDENTIAL
+  ) {
+    req.session.user = ADMIN_CREDENTIAL;
+
     return res.json({
       success: true,
       message: "Login successful"
     });
   }
 
-  return res.status(401).json({
+  return res.json({
     success: false,
-    message: "Invalid key"
+    message: "Invalid credentials"
   });
 });
 
@@ -110,15 +118,15 @@ function getLimit(email) {
   return record;
 }
 
-async function sendBatches(transporter, list) {
-  for (let i = 0; i < list.length; i += BATCH_SIZE) {
-    const batch = list.slice(i, i + BATCH_SIZE);
+async function sendBatches(transporter, mails) {
+  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
+    const batch = mails.slice(i, i + BATCH_SIZE);
 
     await Promise.allSettled(
       batch.map(mail => transporter.sendMail(mail))
     );
 
-    if (i + BATCH_SIZE < list.length) {
+    if (i + BATCH_SIZE < mails.length) {
       await sleep(BATCH_DELAY);
     }
   }
@@ -132,7 +140,7 @@ app.post("/send", requireAuth, async (req, res) => {
       req.body;
 
     if (!email || !password || !recipients) {
-      return res.status(400).json({
+      return res.json({
         success: false,
         message: "Missing required fields"
       });
@@ -144,7 +152,7 @@ app.post("/send", requireAuth, async (req, res) => {
       .filter(r => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
 
     if (!cleanList.length) {
-      return res.status(400).json({
+      return res.json({
         success: false,
         message: "No valid recipients"
       });
@@ -153,7 +161,7 @@ app.post("/send", requireAuth, async (req, res) => {
     const limit = getLimit(email);
 
     if (limit.count + cleanList.length > MAX_PER_HOUR) {
-      return res.status(429).json({
+      return res.json({
         success: false,
         message: "Hourly limit reached"
       });
@@ -185,7 +193,7 @@ app.post("/send", requireAuth, async (req, res) => {
     });
 
   } catch (err) {
-    return res.status(500).json({
+    return res.json({
       success: false,
       message: "Server error"
     });
