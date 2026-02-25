@@ -1,33 +1,30 @@
 require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
+const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 const path = require("path");
-const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-// 🔐 Login ID & Password SAME
-const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
-
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+const ADMIN_KEY = "@##2588^$$^*O*^%%^"; // login id & password same
+const SESSION_SECRET = process.env.SESSION_SECRET || "secure-session-key";
 
 const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
 
-/* ================= STATE ================= */
+/* ================= GLOBAL MEMORY ================= */
 
-const mailLimits = new Map();
+let senderLimits = {}; // { email: { count, startTime } }
 
 /* ================= MIDDLEWARE ================= */
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -38,7 +35,6 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: false,
       maxAge: 60 * 60 * 1000
     }
   })
@@ -47,9 +43,7 @@ app.use(
 /* ================= AUTH ================= */
 
 function requireAuth(req, res, next) {
-  if (req.session && req.session.user === ADMIN_CREDENTIAL) {
-    return next();
-  }
+  if (req.session.user === ADMIN_KEY) return next();
   return res.redirect("/");
 }
 
@@ -59,33 +53,19 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-/* ===== LOGIN FIXED (USERNAME + PASSWORD) ===== */
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
-    return res.json({
-      success: false,
-      message: "Both fields required"
-    });
+    return res.json({ success: false, message: "Key required" });
   }
 
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
-    req.session.user = ADMIN_CREDENTIAL;
-
-    return res.json({
-      success: true,
-      message: "Login successful"
-    });
+  if (username === ADMIN_KEY && password === ADMIN_KEY) {
+    req.session.user = ADMIN_KEY;
+    return res.json({ success: true });
   }
 
-  return res.json({
-    success: false,
-    message: "Invalid credentials"
-  });
+  return res.json({ success: false, message: "Invalid key" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -101,34 +81,19 @@ app.post("/logout", (req, res) => {
 
 /* ================= HELPERS ================= */
 
-function sleep(ms) {
+function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getLimit(email) {
-  const now = Date.now();
-  const record = mailLimits.get(email);
-
-  if (!record || now - record.start > 60 * 60 * 1000) {
-    const fresh = { count: 0, start: now };
-    mailLimits.set(email, fresh);
-    return fresh;
-  }
-
-  return record;
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-async function sendBatches(transporter, mails) {
+async function sendBatch(transporter, mails) {
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     const batch = mails.slice(i, i + BATCH_SIZE);
-
-    await Promise.allSettled(
-      batch.map(mail => transporter.sendMail(mail))
-    );
-
-    if (i + BATCH_SIZE < mails.length) {
-      await sleep(BATCH_DELAY);
-    }
+    await Promise.allSettled(batch.map(mail => transporter.sendMail(mail)));
+    await delay(BATCH_DELAY);
   }
 }
 
@@ -142,28 +107,47 @@ app.post("/send", requireAuth, async (req, res) => {
     if (!email || !password || !recipients) {
       return res.json({
         success: false,
-        message: "Missing required fields"
+        message: "Email, password and recipients required"
       });
     }
 
-    const cleanList = recipients
+    if (!isValidEmail(email)) {
+      return res.json({
+        success: false,
+        message: "Invalid sender email"
+      });
+    }
+
+    const now = Date.now();
+
+    // Reset limit after 1 hour
+    if (
+      !senderLimits[email] ||
+      now - senderLimits[email].startTime > 60 * 60 * 1000
+    ) {
+      senderLimits[email] = { count: 0, startTime: now };
+    }
+
+    // Clean & unique recipients
+    let recipientList = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
-      .filter(r => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
+      .filter(r => isValidEmail(r));
 
-    if (!cleanList.length) {
+    recipientList = [...new Set(recipientList)];
+
+    if (recipientList.length === 0) {
       return res.json({
         success: false,
         message: "No valid recipients"
       });
     }
 
-    const limit = getLimit(email);
-
-    if (limit.count + cleanList.length > MAX_PER_HOUR) {
+    // Enforce 27/hour limit
+    if (senderLimits[email].count + recipientList.length > MAX_PER_HOUR) {
       return res.json({
         success: false,
-        message: "Hourly limit reached"
+        message: "Hourly limit exceeded (27 max)"
       });
     }
 
@@ -176,26 +160,26 @@ app.post("/send", requireAuth, async (req, res) => {
 
     await transporter.verify();
 
-    const mails = cleanList.map(to => ({
-      from: `"${senderName || "Sender"}" <${email}>`,
-      to,
-      subject: subject?.trim() || "Message",
-      text: message?.trim() || ""
+    const mails = recipientList.map(r => ({
+      from: `"${senderName || "User"}" <${email}>`,
+      to: r,
+      subject: subject || "Message",
+      text: message || ""
     }));
 
-    await sendBatches(transporter, mails);
+    await sendBatch(transporter, mails);
 
-    limit.count += cleanList.length;
+    senderLimits[email].count += recipientList.length;
 
     return res.json({
       success: true,
-      message: `Sent ${cleanList.length}`
+      message: `Sent ${recipientList.length}`
     });
 
   } catch (err) {
     return res.json({
       success: false,
-      message: "Server error"
+      message: "Sending failed"
     });
   }
 });
@@ -203,5 +187,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });
