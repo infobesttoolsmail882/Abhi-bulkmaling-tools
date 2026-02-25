@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-const ADMIN_KEY = process.env.ADMIN_KEY || "CHANGE_ADMIN_KEY";
+const ADMIN_KEY = process.env.ADMIN_KEY || "@@2588";
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
@@ -55,15 +55,29 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
+/* -------- LOGIN FIXED -------- */
 app.post("/login", (req, res) => {
   const { key } = req.body;
 
-  if (key && key === ADMIN_KEY) {
-    req.session.auth = true;
-    return res.json({ success: true });
+  if (!key) {
+    return res.status(400).json({
+      success: false,
+      message: "Key required"
+    });
   }
 
-  return res.status(401).json({ success: false });
+  if (key === ADMIN_KEY) {
+    req.session.auth = true;
+    return res.json({
+      success: true,
+      message: "Login successful"
+    });
+  }
+
+  return res.status(401).json({
+    success: false,
+    message: "Invalid key"
+  });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -83,27 +97,28 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getSenderLimit(email) {
+function getLimit(email) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
   if (!record || now - record.start > 60 * 60 * 1000) {
-    mailLimits.set(email, { count: 0, start: now });
-    return mailLimits.get(email);
+    const fresh = { count: 0, start: now };
+    mailLimits.set(email, fresh);
+    return fresh;
   }
 
   return record;
 }
 
-async function sendInBatches(transporter, messages) {
-  for (let i = 0; i < messages.length; i += BATCH_SIZE) {
-    const batch = messages.slice(i, i + BATCH_SIZE);
+async function sendBatches(transporter, list) {
+  for (let i = 0; i < list.length; i += BATCH_SIZE) {
+    const batch = list.slice(i, i + BATCH_SIZE);
 
     await Promise.allSettled(
-      batch.map(msg => transporter.sendMail(msg))
+      batch.map(mail => transporter.sendMail(mail))
     );
 
-    if (i + BATCH_SIZE < messages.length) {
+    if (i + BATCH_SIZE < list.length) {
       await sleep(BATCH_DELAY);
     }
   }
@@ -117,65 +132,68 @@ app.post("/send", requireAuth, async (req, res) => {
       req.body;
 
     if (!email || !password || !recipients) {
-      return res.status(400).json({ success: false });
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields"
+      });
     }
 
-    const cleanRecipients = recipients
+    const cleanList = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
       .filter(r => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
 
-    if (!cleanRecipients.length) {
-      return res.status(400).json({ success: false });
+    if (!cleanList.length) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid recipients"
+      });
     }
 
-    const limit = getSenderLimit(email);
+    const limit = getLimit(email);
 
-    if (limit.count + cleanRecipients.length > MAX_PER_HOUR) {
-      return res.status(429).json({ success: false });
+    if (limit.count + cleanList.length > MAX_PER_HOUR) {
+      return res.status(429).json({
+        success: false,
+        message: "Hourly limit reached"
+      });
     }
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: {
-        user: email,
-        pass: password
-      }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
 
-    const safeSubject = subject?.trim() || "Message";
-    const safeText = message?.trim() || "";
-
-    const messages = cleanRecipients.map(to => ({
+    const mails = cleanList.map(to => ({
       from: `"${senderName || "Sender"}" <${email}>`,
       to,
-      subject: safeSubject,
-      text: safeText,
-      headers: {
-        "X-Mailer": "NodeMailer"
-      }
+      subject: subject?.trim() || "Message",
+      text: message?.trim() || ""
     }));
 
-    await sendInBatches(transporter, messages);
+    await sendBatches(transporter, mails);
 
-    limit.count += cleanRecipients.length;
+    limit.count += cleanList.length;
 
     return res.json({
       success: true,
-      message: `Sent ${cleanRecipients.length}`
+      message: `Sent ${cleanList.length}`
     });
 
   } catch (err) {
-    return res.status(500).json({ success: false });
+    return res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
   }
 });
 
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
