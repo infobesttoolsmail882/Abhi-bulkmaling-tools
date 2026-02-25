@@ -10,25 +10,26 @@ const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-const ADMIN = "@##2588^$$^*O*^%%^";
-const MAX_PER_HOUR = 27;
+const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
+const MAX_PER_HOUR = 27; // SAME LIMIT AS BEFORE
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
 /* ================= STATE ================= */
 
+// { email: { count, startTime } }
 const mailLimits = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    name: "app_session",
+    name: "secure_session",
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
@@ -40,8 +41,7 @@ app.use(
   })
 );
 
-/* ================= SECURITY HEADERS ================= */
-
+// Basic security headers
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -50,24 +50,24 @@ app.use((req, res, next) => {
 
 /* ================= HELPERS ================= */
 
+function requireAuth(req, res, next) {
+  if (req.session.user === ADMIN_CREDENTIAL) return next();
+  return res.redirect("/");
+}
+
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function getLimit(email) {
+function getSenderLimit(email) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
-  if (!record || now - record.start > 3600000) {
-    mailLimits.set(email, { count: 0, start: now });
+  if (!record || now - record.startTime > 3600000) {
+    mailLimits.set(email, { count: 0, startTime: now });
   }
 
   return mailLimits.get(email);
-}
-
-function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN) return next();
-  return res.redirect("/");
 }
 
 /* ================= ROUTES ================= */
@@ -81,24 +81,29 @@ app.get("/", (req, res) => {
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
-  if (username === ADMIN && password === ADMIN) {
-    req.session.user = ADMIN;
+  if (
+    username === ADMIN_CREDENTIAL &&
+    password === ADMIN_CREDENTIAL
+  ) {
+    req.session.user = ADMIN_CREDENTIAL;
     return res.json({ success: true });
   }
 
-  return res.json({ success: false, message: "Invalid credentials" });
+  return res.json({
+    success: false,
+    message: "Invalid credentials"
+  });
 });
 
-// Launcher Page (FIXED)
+// Launcher Page
 app.get("/launcher", requireAuth, (req, res) => {
-  const filePath = path.join(__dirname, "public", "launcher.html");
-  res.sendFile(filePath);
+  res.sendFile(path.join(__dirname, "public", "launcher.html"));
 });
 
 // Logout
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("app_session");
+    res.clearCookie("secure_session");
     res.json({ success: true });
   });
 });
@@ -110,10 +115,11 @@ app.post("/send", requireAuth, async (req, res) => {
     const { senderName, email, password, recipients, subject, message } =
       req.body;
 
+    // Basic validation
     if (!email || !password || !recipients) {
       return res.json({
         success: false,
-        message: "Required fields missing"
+        message: "Email, password and recipients required"
       });
     }
 
@@ -124,6 +130,7 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
+    // Clean & unique recipient list
     const recipientList = [
       ...new Set(
         recipients
@@ -140,26 +147,32 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    const limit = getLimit(email);
+    // Hourly limit check (SAME 27/hour)
+    const limit = getSenderLimit(email);
 
     if (limit.count + recipientList.length > MAX_PER_HOUR) {
       return res.json({
         success: false,
-        message: `Limit exceeded. Remaining: ${
+        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${
           MAX_PER_HOUR - limit.count
         }`
       });
     }
 
+    // Create transporter
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: { user: email, pass: password }
+      auth: {
+        user: email,
+        pass: password
+      }
     });
 
     await transporter.verify();
 
+    // SAME simple sending speed (no aggressive batching)
     for (const to of recipientList) {
       await transporter.sendMail({
         from: `"${senderName || "Sender"}" <${email}>`,
@@ -169,6 +182,7 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
+    // Update limit
     limit.count += recipientList.length;
 
     return res.json({
@@ -177,7 +191,7 @@ app.post("/send", requireAuth, async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Send error:", err.message);
     return res.json({
       success: false,
       message: "Mail sending failed"
