@@ -27,7 +27,7 @@ const mailLimits = new Map();
 const loginAttempts = new Map();
 const ipRateLimit = new Map();
 
-/* ================= MIDDLEWARE ================= */
+/* ================= BASIC SETUP ================= */
 
 app.set("trust proxy", 1);
 
@@ -43,7 +43,6 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false,
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
@@ -57,11 +56,10 @@ app.use((req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-XSS-Protection", "1; mode=block");
-  res.setHeader("Permissions-Policy", "geolocation=()");
   next();
 });
 
-/* ================= BASIC IP RATE LIMIT ================= */
+/* ================= IP RATE LIMIT ================= */
 
 app.use((req, res, next) => {
   const ip = req.ip;
@@ -74,7 +72,7 @@ app.use((req, res, next) => {
   }
 
   if (record.count > 100) {
-    return res.status(429).send("Too many requests");
+    return res.status(429).json({ success: false, message: "Too many requests" });
   }
 
   record.count++;
@@ -121,13 +119,23 @@ function checkHourlyLimit(email, amount) {
 }
 
 async function sendBatch(transporter, mails) {
+  let sentCount = 0;
+
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     const chunk = mails.slice(i, i + BATCH_SIZE);
-    await Promise.allSettled(
+
+    const results = await Promise.allSettled(
       chunk.map(mail => transporter.sendMail(mail))
     );
+
+    results.forEach(r => {
+      if (r.status === "fulfilled") sentCount++;
+    });
+
     await delay(BATCH_DELAY);
   }
+
+  return sentCount;
 }
 
 /* ================= AUTH ================= */
@@ -169,7 +177,7 @@ app.post("/login", (req, res) => {
     }
   }
 
-  return res.json({ success: false });
+  return res.json({ success: false, message: "Invalid login" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -183,18 +191,18 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND MAIL ================= */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body || {};
 
     if (!email || !password || !recipients) {
-      return res.json({ success: false });
+      return res.json({ success: false, message: "Missing fields" });
     }
 
     if (!isValidEmail(email)) {
-      return res.json({ success: false });
+      return res.json({ success: false, message: "Invalid sender email" });
     }
 
     const recipientList = [
@@ -207,11 +215,14 @@ app.post("/send", requireAuth, async (req, res) => {
     ];
 
     if (!recipientList.length) {
-      return res.json({ success: false });
+      return res.json({ success: false, message: "No valid recipients" });
     }
 
     if (!checkHourlyLimit(email, recipientList.length)) {
-      return res.json({ success: false, message: "Limit exceeded" });
+      return res.json({
+        success: false,
+        message: `Max ${MAX_PER_HOUR}/hour limit reached`
+      });
     }
 
     const transporter = nodemailer.createTransport({
@@ -230,16 +241,22 @@ app.post("/send", requireAuth, async (req, res) => {
       text: cleanText(message)
     }));
 
-    await sendBatch(transporter, mails);
+    const sentCount = await sendBatch(transporter, mails);
 
-    return res.json({ success: true, sent: recipientList.length });
+    return res.json({
+      success: true,
+      message: `Send ${sentCount}`
+    });
 
   } catch (err) {
-    return res.json({ success: false });
+    return res.json({
+      success: false,
+      message: "Email sending failed"
+    });
   }
 });
 
-/* ================= CLEANUP MEMORY ================= */
+/* ================= CLEANUP ================= */
 
 setInterval(() => {
   const now = Date.now();
