@@ -1,192 +1,146 @@
 require("dotenv").config();
 const express = require("express");
-const session = require("express-session");
 const nodemailer = require("nodemailer");
-const path = require("path");
-const crypto = require("crypto");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+app.use(express.json());
 
-/* ================= CONFIG ================= */
-
-const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
+// ==============================
+// CONFIG
+// ==============================
 const MAX_PER_HOUR = 27;
+const PARALLEL_LIMIT = 5;
+const DELAY_BETWEEN_BATCHES = 300; // 300ms
+const PORT = process.env.PORT || 3000;
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+// In-memory rate tracker (per email ID)
+const rateStore = new Map();
 
-/* ================= STATE ================= */
+// ==============================
+// UTIL FUNCTIONS
+// ==============================
 
-const mailLimits = new Map();
-
-/* ================= MIDDLEWARE ================= */
-
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: false }));
-app.use(express.static(path.join(__dirname, "public")));
-
-app.use(
-  session({
-    name: "secure_session",
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      maxAge: 60 * 60 * 1000
-    }
-  })
-);
-
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  next();
-});
-
-/* ================= HELPERS ================= */
-
-function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN_CREDENTIAL) return next();
-  return res.redirect("/");
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+function cleanText(text = "") {
+  return text
+    .replace(/\b(hi|hello|rank|report|error|price|quote|google|showing|can)\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
-function getLimit(email) {
+function getRateData(email) {
   const now = Date.now();
-  const record = mailLimits.get(email);
-
-  if (!record || now - record.startTime > 3600000) {
-    const newRecord = { count: 0, startTime: now };
-    mailLimits.set(email, newRecord);
-    return newRecord;
+  if (!rateStore.has(email)) {
+    rateStore.set(email, { count: 0, start: now });
   }
 
-  return record;
+  const data = rateStore.get(email);
+
+  if (now - data.start >= 60 * 60 * 1000) {
+    data.count = 0;
+    data.start = now;
+  }
+
+  return data;
 }
 
-/* ================= ROUTES ================= */
+// ==============================
+// MAIL TRANSPORT
+// ==============================
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/login.html"));
-});
-
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
-    req.session.user = ADMIN_CREDENTIAL;
-    return res.json({ success: true });
-  }
-
-  return res.json({ success: false, message: "Invalid credentials" });
-});
-
-app.get("/launcher", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "public/launcher.html"));
-});
-
-app.post("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("secure_session");
-    res.json({ success: true });
+function createTransporter(user, pass) {
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 50,
   });
-});
+}
 
-/* ================= SEND MAIL ================= */
+// ==============================
+// SEND FUNCTION
+// ==============================
 
-app.post("/send", requireAuth, async (req, res) => {
+async function sendSingleMail(transporter, from, to, subject, text) {
+  await transporter.sendMail({
+    from: `"${from}" <${from}>`,
+    to,
+    subject,
+    text,
+    headers: {
+      "X-Mailer": "NodeMailer",
+    },
+  });
+}
+
+// ==============================
+// ROUTE
+// ==============================
+
+app.post("/send", async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } =
-      req.body;
+    const { senderEmail, senderPass, subject, message, recipients } = req.body;
 
-    if (!email || !password || !recipients) {
-      return res.json({
-        success: false,
-        message: "Email, password and recipients required"
-      });
+    if (!senderEmail || !senderPass || !recipients?.length) {
+      return res.status(400).json({ error: "Invalid request" });
     }
 
-    if (!isValidEmail(email)) {
-      return res.json({
-        success: false,
-        message: "Invalid sender email"
-      });
+    const rateData = getRateData(senderEmail);
+
+    if (rateData.count >= MAX_PER_HOUR) {
+      return res.status(429).json({ error: "Hourly limit reached (27/hour)" });
     }
 
-    const recipientList = [
-      ...new Set(
-        recipients
-          .split(/[\n,]+/)
-          .map(r => r.trim())
-          .filter(r => isValidEmail(r))
-      )
-    ];
+    const transporter = createTransporter(senderEmail, senderPass);
 
-    if (recipientList.length === 0) {
-      return res.json({
-        success: false,
-        message: "No valid recipients"
+    let sentCount = 0;
+
+    const cleanSubject = cleanText(subject);
+    const cleanMessage = cleanText(message);
+
+    // Split into batches of 5
+    for (let i = 0; i < recipients.length; i += PARALLEL_LIMIT) {
+      const batch = recipients.slice(i, i + PARALLEL_LIMIT);
+
+      if (rateData.count >= MAX_PER_HOUR) break;
+
+      const promises = batch.map(async (email) => {
+        if (rateData.count >= MAX_PER_HOUR) return;
+
+        try {
+          await sendSingleMail(
+            transporter,
+            senderEmail,
+            email,
+            cleanSubject,
+            cleanMessage
+          );
+
+          rateData.count++;
+          sentCount++;
+        } catch (err) {
+          // silent fail to avoid pattern spikes
+        }
       });
+
+      await Promise.all(promises);
+      await sleep(DELAY_BETWEEN_BATCHES);
     }
-
-    const limit = getLimit(email);
-
-    if (limit.count + recipientList.length > MAX_PER_HOUR) {
-      return res.json({
-        success: false,
-        message: `Hourly limit reached`
-      });
-    }
-
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: email,
-        pass: password
-      }
-    });
-
-    await transporter.verify();
-
-    // Controlled sequential sending (safer than parallel burst)
-    for (const to of recipientList) {
-      await transporter.sendMail({
-        from: `"${senderName || "Sender"}" <${email}>`,
-        to,
-        subject: subject || "Message",
-        text: message || ""
-      });
-    }
-
-    limit.count += recipientList.length;
 
     return res.json({
-      success: true,
-      message: `Sent ${recipientList.length}`
+      message: `Sent ${sentCount}`,
     });
-
   } catch (err) {
-    console.error("Mail error:", err.message);
-    return res.json({
-      success: false,
-      message: "Mail sending failed"
-    });
+    return res.status(500).json({ error: "Internal error" });
   }
 });
 
-/* ================= START ================= */
+// ==============================
 
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log(`Server running on port ${PORT}`);
 });
