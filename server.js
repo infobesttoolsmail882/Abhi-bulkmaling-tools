@@ -11,14 +11,13 @@ const PORT = process.env.PORT || 8080;
 /* ================= CONFIG ================= */
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
-const MAX_PER_HOUR = 27; // SAME LIMIT AS BEFORE
+const MAX_PER_HOUR = 27;
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
 /* ================= STATE ================= */
 
-// { email: { count, startTime } }
 const mailLimits = new Map();
 
 /* ================= MIDDLEWARE ================= */
@@ -41,7 +40,6 @@ app.use(
   })
 );
 
-// Basic security headers
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -59,25 +57,25 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function getSenderLimit(email) {
+function getLimit(email) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
   if (!record || now - record.startTime > 3600000) {
-    mailLimits.set(email, { count: 0, startTime: now });
+    const newRecord = { count: 0, startTime: now };
+    mailLimits.set(email, newRecord);
+    return newRecord;
   }
 
-  return mailLimits.get(email);
+  return record;
 }
 
 /* ================= ROUTES ================= */
 
-// Login Page
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
+  res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-// Login API
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
@@ -89,18 +87,13 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({
-    success: false,
-    message: "Invalid credentials"
-  });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
-// Launcher Page
 app.get("/launcher", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "launcher.html"));
+  res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
-// Logout
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("secure_session");
@@ -115,7 +108,6 @@ app.post("/send", requireAuth, async (req, res) => {
     const { senderName, email, password, recipients, subject, message } =
       req.body;
 
-    // Basic validation
     if (!email || !password || !recipients) {
       return res.json({
         success: false,
@@ -130,7 +122,6 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    // Clean & unique recipient list
     const recipientList = [
       ...new Set(
         recipients
@@ -147,19 +138,15 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    // Hourly limit check (SAME 27/hour)
-    const limit = getSenderLimit(email);
+    const limit = getLimit(email);
 
     if (limit.count + recipientList.length > MAX_PER_HOUR) {
       return res.json({
         success: false,
-        message: `Max ${MAX_PER_HOUR}/hour exceeded | Remaining: ${
-          MAX_PER_HOUR - limit.count
-        }`
+        message: `Hourly limit reached`
       });
     }
 
-    // Create transporter
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
@@ -172,7 +159,7 @@ app.post("/send", requireAuth, async (req, res) => {
 
     await transporter.verify();
 
-    // SAME simple sending speed (no aggressive batching)
+    // Controlled sequential sending (safer than parallel burst)
     for (const to of recipientList) {
       await transporter.sendMail({
         from: `"${senderName || "Sender"}" <${email}>`,
@@ -182,16 +169,15 @@ app.post("/send", requireAuth, async (req, res) => {
       });
     }
 
-    // Update limit
     limit.count += recipientList.length;
 
     return res.json({
       success: true,
-      message: `Sent ${recipientList.length} | Used ${limit.count}/${MAX_PER_HOUR}`
+      message: `Sent ${recipientList.length}`
     });
 
   } catch (err) {
-    console.error("Send error:", err.message);
+    console.error("Mail error:", err.message);
     return res.json({
       success: false,
       message: "Mail sending failed"
