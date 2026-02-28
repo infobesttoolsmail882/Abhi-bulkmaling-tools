@@ -1,43 +1,59 @@
+require("dotenv").config();
 const express = require("express");
 const nodemailer = require("nodemailer");
-const rateLimit = require("express-rate-limit");
+const crypto = require("crypto");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "20kb" }));
 
-/* ===============================
-   SAFE CONFIG
-================================ */
+/* ==============================
+   CONFIG
+============================== */
 
+const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
-const BATCH_DELAY = 300; // 300ms
-const HOURLY_LIMIT = 27;
+const BATCH_DELAY = 300; // same speed
+const SESSION_SECRET =
+  process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
-let sentThisHour = 0;
-let hourStart = Date.now();
+/* ==============================
+   STATE (Per Sender Limit)
+============================== */
 
-/* ===============================
-   HELPER
-================================ */
+const senderLimits = new Map();
+
+/* ==============================
+   HELPERS
+============================== */
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function resetHourlyLimit() {
-  const now = Date.now();
-  if (now - hourStart >= 60 * 60 * 1000) {
-    sentThisHour = 0;
-    hourStart = now;
-  }
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-/* ===============================
-   SAFE SEND FUNCTION
-================================ */
+function checkAndUpdateLimit(sender, amount) {
+  const now = Date.now();
+  const record = senderLimits.get(sender);
+
+  if (!record || now - record.startTime > 3600000) {
+    senderLimits.set(sender, { count: 0, startTime: now });
+  }
+
+  const updated = senderLimits.get(sender);
+
+  if (updated.count + amount > MAX_PER_HOUR) {
+    return false;
+  }
+
+  updated.count += amount;
+  return true;
+}
 
 async function sendBatch(transporter, mails) {
-  let success = 0;
+  let successCount = 0;
 
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     const chunk = mails.slice(i, i + BATCH_SIZE);
@@ -47,40 +63,50 @@ async function sendBatch(transporter, mails) {
     );
 
     results.forEach(r => {
-      if (r.status === "fulfilled") success++;
+      if (r.status === "fulfilled") successCount++;
     });
 
-    const jitter = Math.floor(Math.random() * 120);
-    await delay(BATCH_DELAY + jitter);
+    await delay(BATCH_DELAY);
   }
 
-  return success;
+  return successCount;
 }
 
-/* ===============================
-   ROUTE
-================================ */
+/* ==============================
+   SEND ROUTE
+============================== */
 
 app.post("/send", async (req, res) => {
   try {
-    resetHourlyLimit();
+    const { email, password, recipients, subject, message } = req.body || {};
 
-    const { email, password, subject, message, recipients } = req.body;
-
-    if (!email || !password || !subject || !message || !recipients?.length) {
-      return res.status(400).json({ error: "Missing fields" });
+    if (!email || !password || !recipients) {
+      return res.json({ success: false, message: "Missing required fields" });
     }
 
-    if (sentThisHour >= HOURLY_LIMIT) {
-      return res.status(429).json({
-        error: "Hourly limit reached. Try after 1 hour."
+    if (!isValidEmail(email)) {
+      return res.json({ success: false, message: "Invalid sender email" });
+    }
+
+    const recipientList = [
+      ...new Set(
+        recipients
+          .split(/[\n,]+/)
+          .map(r => r.trim())
+          .filter(r => isValidEmail(r))
+      )
+    ];
+
+    if (recipientList.length === 0) {
+      return res.json({ success: false, message: "No valid recipients" });
+    }
+
+    if (!checkAndUpdateLimit(email, recipientList.length)) {
+      return res.json({
+        success: false,
+        message: `Limit ${MAX_PER_HOUR}/hour exceeded`
       });
     }
-
-    const allowedToSend = Math.min(
-      HOURLY_LIMIT - sentThisHour,
-      recipients.length
-    );
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -88,42 +114,43 @@ app.post("/send", async (req, res) => {
       secure: true,
       pool: true,
       maxConnections: 5,
-      maxMessages: 50,
+      maxMessages: 100,
       auth: {
         user: email,
         pass: password
       }
     });
 
-    const mailList = recipients.slice(0, allowedToSend).map(to => ({
+    await transporter.verify();
+
+    const mails = recipientList.map(to => ({
       from: `"${email}" <${email}>`,
       to,
-      subject,
-      text: message,
-      headers: {
-        "X-Mailer": "NodeMailer",
-      }
+      subject: subject || "Message",
+      text: message || ""
     }));
 
-    const successCount = await sendBatch(transporter, mailList);
-
-    sentThisHour += successCount;
+    const sentCount = await sendBatch(transporter, mails);
 
     return res.json({
-      message: `Send ${successCount}`
+      success: true,
+      message: `Send ${sentCount}`
     });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Sending failed" });
+    console.error("Mail Error:", err.message);
+    return res.json({
+      success: false,
+      message: "Email sending failed"
+    });
   }
 });
 
-/* ===============================
-   SERVER
-================================ */
+/* ==============================
+   START
+============================== */
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });
