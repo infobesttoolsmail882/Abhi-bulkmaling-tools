@@ -12,12 +12,12 @@ const PORT = process.env.PORT || 8080;
 
 const ADMIN_KEY = process.env.ADMIN_KEY || "@##2588^$$^*O*^%%^";
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+  process.env.SESSION_SECRET || crypto.randomBytes(64).toString("hex");
 
 const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
-const MAX_BODY_SIZE = "15kb";
+const MAX_BODY_SIZE = "20kb";
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
@@ -25,9 +25,9 @@ const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
 const mailLimits = new Map();
 const loginAttempts = new Map();
-const ipRateLimit = new Map();
+const ipLimiter = new Map();
 
-/* ================= BASIC SETUP ================= */
+/* ================= APP SETUP ================= */
 
 app.set("trust proxy", 1);
 
@@ -37,7 +37,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    name: "secure.sid",
+    name: "secure.session",
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
@@ -60,19 +60,19 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ================= IP RATE LIMIT ================= */
+/* ================= GLOBAL RATE LIMIT ================= */
 
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const record = ipRateLimit.get(ip);
+  const record = ipLimiter.get(ip);
 
   if (!record || now - record.start > 60000) {
-    ipRateLimit.set(ip, { count: 1, start: now });
+    ipLimiter.set(ip, { count: 1, start: now });
     return next();
   }
 
-  if (record.count > 100) {
+  if (record.count >= 120) {
     return res.status(429).json({ success: false, message: "Too many requests" });
   }
 
@@ -86,11 +86,11 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function validEmail(email) {
+function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function cleanText(text = "") {
+function sanitize(text = "") {
   return text
     .replace(/<[^>]*>/g, "")
     .replace(/[^\x00-\x7F]/g, "")
@@ -101,15 +101,15 @@ function cleanText(text = "") {
     .slice(0, 1000);
 }
 
-function checkLimit(email, amount) {
+function checkLimit(sender, amount) {
   const now = Date.now();
-  const record = mailLimits.get(email);
+  const record = mailLimits.get(sender);
 
   if (!record || now - record.start > 3600000) {
-    mailLimits.set(email, { count: 0, start: now });
+    mailLimits.set(sender, { count: 0, start: now });
   }
 
-  const updated = mailLimits.get(email);
+  const updated = mailLimits.get(sender);
 
   if (updated.count + amount > MAX_PER_HOUR) {
     return false;
@@ -120,7 +120,7 @@ function checkLimit(email, amount) {
 }
 
 async function sendBatch(transporter, mails) {
-  let sent = 0;
+  let success = 0;
 
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     const chunk = mails.slice(i, i + BATCH_SIZE);
@@ -130,13 +130,13 @@ async function sendBatch(transporter, mails) {
     );
 
     results.forEach(r => {
-      if (r.status === "fulfilled") sent++;
+      if (r.status === "fulfilled") success++;
     });
 
     await delay(BATCH_DELAY);
   }
 
-  return sent;
+  return success;
 }
 
 /* ================= AUTH ================= */
@@ -159,7 +159,7 @@ app.post("/login", (req, res) => {
   const record = loginAttempts.get(ip);
 
   if (record && record.blockUntil > now) {
-    return res.json({ success: false, message: "Try later" });
+    return res.json({ success: false, message: "Blocked temporarily" });
   }
 
   if (username === ADMIN_KEY && password === ADMIN_KEY) {
@@ -177,7 +177,7 @@ app.post("/login", (req, res) => {
     }
   }
 
-  return res.json({ success: false, message: "Invalid login" });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -186,7 +186,7 @@ app.get("/launcher", requireAuth, (req, res) => {
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("secure.sid");
+    res.clearCookie("secure.session");
     res.json({ success: true });
   });
 });
@@ -195,13 +195,14 @@ app.post("/logout", (req, res) => {
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } = req.body || {};
+    const { senderName, email, password, recipients, subject, message } =
+      req.body || {};
 
     if (!email || !password || !recipients) {
       return res.json({ success: false, message: "Missing fields" });
     }
 
-    if (!validEmail(email)) {
+    if (!isValidEmail(email)) {
       return res.json({ success: false, message: "Invalid sender email" });
     }
 
@@ -210,7 +211,7 @@ app.post("/send", requireAuth, async (req, res) => {
         recipients
           .split(/[\n,]+/)
           .map(r => r.trim())
-          .filter(r => validEmail(r))
+          .filter(r => isValidEmail(r))
       )
     ];
 
@@ -231,21 +232,17 @@ app.post("/send", requireAuth, async (req, res) => {
       secure: true,
       pool: true,
       maxConnections: 5,
-      maxMessages: 50,
+      maxMessages: 100,
       auth: { user: email, pass: password }
     });
 
     await transporter.verify();
 
     const mails = list.map(to => ({
-      from: `"${cleanText(senderName).slice(0,50) || "Sender"}" <${email}>`,
+      from: `"${sanitize(senderName).slice(0, 50) || "Sender"}" <${email}>`,
       to,
-      subject: cleanText(subject).slice(0,150) || "Message",
-      text: cleanText(message),
-      headers: {
-        "X-Mailer": "NodeMailer",
-        "X-Priority": "3"
-      }
+      subject: sanitize(subject).slice(0, 150) || "Message",
+      text: sanitize(message)
     }));
 
     const sentCount = await sendBatch(transporter, mails);
@@ -268,9 +265,9 @@ app.post("/send", requireAuth, async (req, res) => {
 setInterval(() => {
   const now = Date.now();
 
-  for (const [email, record] of mailLimits.entries()) {
-    if (now - record.start > 3600000) {
-      mailLimits.delete(email);
+  for (const [key, value] of mailLimits.entries()) {
+    if (now - value.start > 3600000) {
+      mailLimits.delete(key);
     }
   }
 
@@ -279,7 +276,6 @@ setInterval(() => {
       loginAttempts.delete(ip);
     }
   }
-
 }, 10 * 60 * 1000);
 
 /* ================= START ================= */
