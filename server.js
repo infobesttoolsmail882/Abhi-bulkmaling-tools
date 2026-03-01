@@ -11,19 +11,21 @@ const PORT = process.env.PORT || 8080;
 /* ================= CONFIG ================= */
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
-
 const SESSION_SECRET =
-  process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+  process.env.SESSION_SECRET || crypto.randomBytes(64).toString("hex");
 
-// LIMITS
-const DAILY_LIMIT = 9500;          // 24 hour max
+const DAILY_LIMIT = 9500;
+const PER_REQUEST_LIMIT = 200;
+const SESSION_LIMIT = 2000;
+
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
-const MAX_BODY = "20kb";
+
+const MAX_BODY = "25kb";
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
-/* ================= MEMORY STORE ================= */
+/* ================= STATE ================= */
 
 const dailyLimits = new Map();
 const loginAttempts = new Map();
@@ -31,19 +33,24 @@ const ipLimiter = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
+app.disable("x-powered-by");
+
 app.use(express.json({ limit: MAX_BODY }));
 app.use(express.urlencoded({ extended: false, limit: MAX_BODY }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
+    name: "secure-mail-session",
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     cookie: {
       httpOnly: true,
       sameSite: "strict",
-      maxAge: 60 * 60 * 1000 // 1 hour auto logout
+      secure: true,
+      maxAge: 60 * 60 * 1000
     }
   })
 );
@@ -53,11 +60,11 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Permissions-Policy", "geolocation=()");
   next();
 });
 
-// Basic IP rate limit (100 req/min)
+// IP rate limiter
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
@@ -85,15 +92,15 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function clean(text = "", max = 1000) {
+function sanitize(text = "", max = 1000) {
   return text
+    .replace(/[\r\n]/g, "")
     .replace(/<[^>]*>/g, "")
-    .replace(/[^\x00-\x7F]/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
     .trim()
     .slice(0, max);
 }
 
-// DAILY LIMIT CHECK (24 hour reset)
 function checkDailyLimit(email, amount) {
   const now = Date.now();
   const record = dailyLimits.get(email);
@@ -104,9 +111,7 @@ function checkDailyLimit(email, amount) {
 
   const updated = dailyLimits.get(email);
 
-  if (updated.count + amount > DAILY_LIMIT) {
-    return false;
-  }
+  if (updated.count + amount > DAILY_LIMIT) return false;
 
   updated.count += amount;
   return true;
@@ -149,12 +154,10 @@ app.post("/login", (req, res) => {
   const { username, password } = req.body || {};
   const ip = req.ip;
   const now = Date.now();
-
   const record = loginAttempts.get(ip);
 
-  if (record && record.blockUntil > now) {
-    return res.json({ success: false, message: "Try again later" });
-  }
+  if (record && record.blockUntil > now)
+    return res.json({ success: false, message: "Blocked. Try later." });
 
   if (
     username === ADMIN_CREDENTIAL &&
@@ -162,6 +165,7 @@ app.post("/login", (req, res) => {
   ) {
     loginAttempts.delete(ip);
     req.session.user = ADMIN_CREDENTIAL;
+    req.session.sent = 0;
     return res.json({ success: true });
   }
 
@@ -169,12 +173,11 @@ app.post("/login", (req, res) => {
     loginAttempts.set(ip, { count: 1 });
   } else {
     record.count++;
-    if (record.count >= LOGIN_MAX_ATTEMPTS) {
+    if (record.count >= LOGIN_MAX_ATTEMPTS)
       record.blockUntil = now + LOGIN_BLOCK_TIME;
-    }
   }
 
-  return res.json({ success: false, message: "Invalid credentials" });
+  return res.json({ success: false });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -183,12 +186,12 @@ app.get("/launcher", requireAuth, (req, res) => {
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+    res.clearCookie("secure-mail-session");
     res.json({ success: true });
   });
 });
 
-/* ================= SEND MAIL ================= */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -196,10 +199,10 @@ app.post("/send", requireAuth, async (req, res) => {
       req.body || {};
 
     if (!email || !password || !recipients)
-      return res.json({ success: false, message: "Missing fields" });
+      return res.json({ success: false });
 
     if (!isValidEmail(email))
-      return res.json({ success: false, message: "Invalid email" });
+      return res.json({ success: false });
 
     const list = [
       ...new Set(
@@ -210,30 +213,34 @@ app.post("/send", requireAuth, async (req, res) => {
       )
     ];
 
-    if (!list.length)
-      return res.json({ success: false, message: "No valid recipients" });
+    if (!list.length || list.length > PER_REQUEST_LIMIT)
+      return res.json({ success: false });
+
+    if (req.session.sent + list.length > SESSION_LIMIT)
+      return res.json({ success: false });
 
     if (!checkDailyLimit(email, list.length))
-      return res.json({
-        success: false,
-        message: `Daily limit ${DAILY_LIMIT} reached`
-      });
+      return res.json({ success: false });
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: email, pass: password }
+      auth: { user: email, pass: password },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000
     });
 
     await transporter.verify();
 
     const mails = list.map(to => ({
-      from: `"${clean(senderName, 50) || "Sender"}" <${email}>`,
+      from: `"${sanitize(senderName, 50) || "Sender"}" <${email}>`,
       to,
-      subject: clean(subject, 150) || "Message",
-      text: clean(message, 2000)
+      subject: sanitize(subject, 150),
+      text: sanitize(message, 3000)
     }));
 
     const sentCount = await sendInBatches(transporter, mails);
+
+    req.session.sent += sentCount;
 
     return res.json({
       success: true,
@@ -241,15 +248,23 @@ app.post("/send", requireAuth, async (req, res) => {
     });
 
   } catch (err) {
-    return res.json({
-      success: false,
-      message: "Sending failed"
-    });
+    return res.json({ success: false });
   }
 });
+
+/* ================= CLEANUP ================= */
+
+// auto cleanup every hour
+setInterval(() => {
+  const now = Date.now();
+  for (let [key, value] of dailyLimits) {
+    if (now - value.start > 24 * 60 * 60 * 1000)
+      dailyLimits.delete(key);
+  }
+}, 60 * 60 * 1000);
 
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log("Secure server running on port " + PORT);
 });
