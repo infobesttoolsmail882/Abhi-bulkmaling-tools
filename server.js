@@ -4,94 +4,52 @@ const nodemailer = require("nodemailer");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
-const crypto = require("crypto");
 
 const app = express();
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-// 🔐 CHANGE THESE VALUES
+// 🔐 CHANGE THESE VALUES BEFORE DEPLOY
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "StrongPassword123!";
 
-// ⚠️ Gmail App Password use karein (normal password nahi)
-const SMTP_CONFIG = {
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: "yourgmail@gmail.com",
-    pass: "your_app_password_here"
-  }
-};
-
-const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
-const MAX_PER_HOUR = 20;
-const MAX_BODY_SIZE = "8kb";
-
-/* ================= STATE ================= */
-
-const mailLimits = new Map();
+// ⚠️ Use Gmail APP PASSWORD (not normal password)
+const SMTP_USER = "yourgmail@gmail.com";
+const SMTP_PASS = "your_app_password_here";
 
 /* ================= SECURITY ================= */
 
 app.disable("x-powered-by");
 app.use(helmet());
 
-app.use(express.json({ limit: MAX_BODY_SIZE }));
-app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
+app.use(express.json({ limit: "5kb" }));
+app.use(express.urlencoded({ extended: false, limit: "5kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    secret: SESSION_SECRET,
+    secret: "ultra_secure_random_string_12345",
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "strict",
-      maxAge: 60 * 60 * 1000
+      sameSite: "strict"
     }
   })
 );
 
+// Global rate limit
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50
+  max: 20
 });
-
-app.use("/send", limiter);
+app.use(limiter);
 
 /* ================= HELPERS ================= */
 
 const isValidEmail = email =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-function cleanText(text = "", max = 500) {
-  return text
-    .replace(/<[^>]*>/g, "")
-    .replace(/[^\x00-\x7F]/g, "")
-    .replace(/\s{3,}/g, " ")
-    .trim()
-    .slice(0, max);
-}
-
-function checkHourlyLimit(email, count) {
-  const now = Date.now();
-  const record = mailLimits.get(email);
-
-  if (!record || now - record.start > 3600000) {
-    mailLimits.set(email, { count: 0, start: now });
-  }
-
-  const updated = mailLimits.get(email);
-
-  if (updated.count + count > MAX_PER_HOUR) return false;
-
-  updated.count += count;
-  return true;
-}
 
 function requireAuth(req, res, next) {
   if (req.session.user === ADMIN_USERNAME) return next();
@@ -101,76 +59,59 @@ function requireAuth(req, res, next) {
 /* ================= ROUTES ================= */
 
 app.post("/login", (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password } = req.body;
 
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     req.session.user = ADMIN_USERNAME;
     return res.json({ success: true });
   }
 
-  return res.json({ success: false });
+  res.json({ success: false });
 });
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
     res.json({ success: true });
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SAFE EMAIL SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { recipients, subject, message } = req.body || {};
+    const { to, subject, message } = req.body;
 
-    if (!recipients || !subject || !message)
+    if (!to || !subject || !message)
       return res.json({ success: false, message: "Missing fields" });
 
-    const recipientList = [
-      ...new Set(
-        recipients
-          .split(/[\n,]+/)
-          .map(r => r.trim())
-          .filter(isValidEmail)
-      )
-    ];
+    if (!isValidEmail(to))
+      return res.json({ success: false, message: "Invalid email" });
 
-    if (!recipientList.length)
-      return res.json({ success: false, message: "No valid recipients" });
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS
+      }
+    });
 
-    if (!checkHourlyLimit(SMTP_CONFIG.auth.user, recipientList.length))
-      return res.json({
-        success: false,
-        message: "Hourly limit exceeded"
-      });
-
-    const transporter = nodemailer.createTransport(SMTP_CONFIG);
     await transporter.verify();
 
-    let sent = 0;
+    // Slow sending (reduce abuse risk)
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    for (const to of recipientList) {
-      await transporter.sendMail({
-        from: SMTP_CONFIG.auth.user,
-        to,
-        subject: cleanText(subject, 120),
-        text: cleanText(message, 1000)
-      });
-      sent++;
-    }
-
-    return res.json({
-      success: true,
-      message: `Sent ${sent} emails`
+    await transporter.sendMail({
+      from: SMTP_USER,
+      to,
+      subject: subject.substring(0, 120),
+      text: message.substring(0, 2000)
     });
+
+    res.json({ success: true });
 
   } catch (err) {
-    console.error(err.message);
-    return res.json({
-      success: false,
-      message: "Sending failed"
-    });
+    console.error("Mail error:", err.message);
+    res.json({ success: false, message: "Send failed" });
   }
 });
 
