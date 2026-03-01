@@ -12,15 +12,15 @@ const PORT = 8080;
 const ADMIN_CREDENTIAL = "@##2588^$$^O^%%^";
 const SESSION_SECRET = crypto.randomBytes(32).toString("hex");
 
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
+const BATCH_SIZE = 5;        // same speed
+const BATCH_DELAY = 300;     // same delay
 const MAX_BODY_SIZE = "15kb";
 
 /* ================= STATE ================= */
 
-const requestLimit = new Map();
+const ipLimiter = new Map();
 
-/* ================= MIDDLEWARE ================= */
+/* ================= BASIC SECURITY ================= */
 
 app.disable("x-powered-by");
 
@@ -36,12 +36,12 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "strict",
-      maxAge: 60 * 60 * 1000
+      maxAge: 60 * 60 * 1000 // 1 hour auto logout
     }
   })
 );
 
-/* Security Headers */
+/* Security headers */
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -49,18 +49,18 @@ app.use((req, res, next) => {
   next();
 });
 
-/* Basic Rate Protection */
+/* Basic IP rate limit */
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const record = requestLimit.get(ip);
+  const record = ipLimiter.get(ip);
 
   if (!record || now - record.time > 60000) {
-    requestLimit.set(ip, { count: 1, time: now });
+    ipLimiter.set(ip, { count: 1, time: now });
     return next();
   }
 
-  if (record.count > 100) {
+  if (record.count > 120) {
     return res.status(429).send("Too many requests");
   }
 
@@ -82,6 +82,7 @@ function sanitize(text = "", max = 1000) {
   return text
     .replace(/<[^>]*>/g, "")
     .replace(/[^\x00-\x7F]/g, "")
+    .replace(/\s{3,}/g, " ")
     .trim()
     .slice(0, max);
 }
@@ -121,20 +122,22 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } =
       req.body || {};
 
-    if (!email || !password || !recipients)
+    if (!email || !password || !recipients) {
       return res.json({ success: false, message: "Missing fields" });
+    }
 
-    if (!isValidEmail(email))
-      return res.json({ success: false, message: "Invalid email" });
+    if (!isValidEmail(email)) {
+      return res.json({ success: false, message: "Invalid sender email" });
+    }
 
-    const list = [
+    const recipientList = [
       ...new Set(
         recipients
           .split(/[\n,]+/)
@@ -143,30 +146,31 @@ app.post("/send", requireAuth, async (req, res) => {
       )
     ];
 
-    if (!list.length)
+    if (!recipientList.length) {
       return res.json({ success: false, message: "No valid recipients" });
+    }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: { user: email, pass: password },
       pool: true,
       maxConnections: 2,
-      maxMessages: 50
+      maxMessages: 100
     });
 
     await transporter.verify();
 
     let sentCount = 0;
 
-    for (let i = 0; i < list.length; i += BATCH_SIZE) {
-      const batch = list.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
+      const batch = recipientList.slice(i, i + BATCH_SIZE);
 
       const results = await Promise.allSettled(
         batch.map(to =>
           transporter.sendMail({
             from: `"${sanitize(senderName, 40) || "Sender"}" <${email}>`,
             to,
-            subject: sanitize(subject, 120),
+            subject: sanitize(subject, 120) || "Message",
             text: sanitize(message, 2000)
           })
         )
