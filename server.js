@@ -9,22 +9,22 @@ const PORT = 8080;
 
 /* ================= CONFIG ================= */
 
-const ADMIN_CREDENTIAL = "@##2588^$$^O^%%^";
-
-const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
+const ADMIN = "@##2588^$$^O^%%^";
 
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
-const MAX_BODY = "15kb";
+const DAILY_LIMIT = 9500;
+
+const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 
 /* ================= STATE ================= */
 
-const dailyLimit = new Map();
+const usageMap = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
-app.use(express.json({ limit: MAX_BODY }));
-app.use(express.urlencoded({ extended: false, limit: MAX_BODY }));
+app.use(express.json({ limit: "20kb" }));
+app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -35,58 +35,53 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "strict",
-      maxAge: 60 * 60 * 1000
+      maxAge: 60 * 60 * 1000 // 1 hour
     }
   })
 );
 
 app.disable("x-powered-by");
 
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  next();
-});
-
 /* ================= HELPERS ================= */
 
 function delay(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-function clean(text = "", max = 1000) {
-  return text
-    .replace(/<[^>]*>/g, "")
-    .replace(/[^\x00-\x7F]/g, "")
-    .trim()
-    .slice(0, max);
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function checkDailyLimit(email, count) {
+function sanitize(text = "", max = 1000) {
+  return text.replace(/<[^>]*>?/gm, "").trim().slice(0, max);
+}
+
+function checkDailyLimit(sender, count) {
   const now = Date.now();
-  const record = dailyLimit.get(email);
+  const record = usageMap.get(sender);
 
   if (!record || now - record.start > 86400000) {
-    dailyLimit.set(email, { count: 0, start: now });
+    usageMap.set(sender, { count: 0, start: now });
   }
 
-  const updated = dailyLimit.get(email);
+  const updated = usageMap.get(sender);
 
-  if (updated.count + count > 9500) return false;
+  if (updated.count + count > DAILY_LIMIT) {
+    return false;
+  }
 
   updated.count += count;
   return true;
 }
 
-/* ================= AUTH ================= */
-
 function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN_CREDENTIAL) return next();
-  return res.redirect("/");
+  if (req.session.user === ADMIN) {
+    return next();
+  }
+  return res.status(401).json({
+    success: false,
+    message: "Unauthorized"
+  });
 }
 
 /* ================= ROUTES ================= */
@@ -96,60 +91,84 @@ app.get("/", (req, res) => {
 });
 
 app.post("/login", (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password } = req.body;
 
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
-    req.session.user = ADMIN_CREDENTIAL;
-    return res.json({ success: true });
+  if (username === ADMIN && password === ADMIN) {
+    req.session.user = ADMIN;
+
+    return res.json({
+      success: true,
+      message: "Login successful"
+    });
   }
 
-  return res.json({ success: false });
+  return res.json({
+    success: false,
+    message: "Invalid credentials"
+  });
 });
 
-app.get("/launcher", requireAuth, (req, res) => {
+app.get("/launcher", (req, res) => {
+  if (req.session.user !== ADMIN) {
+    return res.redirect("/");
+  }
+
   res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("connect.sid");
-    res.json({ success: true });
+    res.json({
+      success: true,
+      message: "Logged out"
+    });
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } =
-      req.body || {};
+    const { senderName, email, password, subject, message, recipients } =
+      req.body;
 
-    if (!email || !password || !recipients)
-      return res.json({ success: false });
+    if (!email || !password || !recipients) {
+      return res.json({
+        success: false,
+        message: "Missing required fields"
+      });
+    }
 
-    if (!isValidEmail(email))
-      return res.json({ success: false });
+    if (!isValidEmail(email)) {
+      return res.json({
+        success: false,
+        message: "Invalid sender email"
+      });
+    }
 
     const list = [
       ...new Set(
         recipients
           .split(/[\n,]+/)
-          .map(r => r.trim())
+          .map(e => e.trim())
           .filter(isValidEmail)
       )
     ];
 
-    if (!list.length)
-      return res.json({ success: false });
-
-    if (!checkDailyLimit(email, list.length))
+    if (!list.length) {
       return res.json({
         success: false,
-        message: "Daily limit reached"
+        message: "No valid recipients"
       });
+    }
+
+    if (!checkDailyLimit(email, list.length)) {
+      return res.json({
+        success: false,
+        message: "24 hour limit reached"
+      });
+    }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
@@ -168,10 +187,10 @@ app.post("/send", requireAuth, async (req, res) => {
       const results = await Promise.allSettled(
         batch.map(to =>
           transporter.sendMail({
-            from: `"${clean(senderName, 40) || "Sender"}" <${email}>`,
+            from: `"${sanitize(senderName, 40) || "Sender"}" <${email}>`,
             to,
-            subject: clean(subject, 120) || "Message",
-            text: clean(message, 2000)
+            subject: sanitize(subject, 120) || "Message",
+            text: sanitize(message, 3000)
           })
         )
       );
@@ -188,10 +207,10 @@ app.post("/send", requireAuth, async (req, res) => {
       message: `Send ${sent}`
     });
 
-  } catch (err) {
+  } catch (error) {
     return res.json({
       success: false,
-      message: "Failed"
+      message: "Sending failed"
     });
   }
 });
