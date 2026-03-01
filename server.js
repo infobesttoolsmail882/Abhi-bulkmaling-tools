@@ -1,220 +1,159 @@
-require("dotenv").config();
+/*************************************************
+ * SAFE & CLEAN MAIL SERVER (Single File)
+ * Batch: 6
+ * Delay: 320ms
+ *************************************************/
+
 const express = require("express");
-const session = require("express-session");
 const nodemailer = require("nodemailer");
-const path = require("path");
-const crypto = require("crypto");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000;
 
-/* ================= CONFIG ================= */
+/* =============================
+   🔐 HARD CODE YOUR EMAIL HERE
+   (Use Gmail App Password Only)
+============================= */
 
-const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
+const EMAIL_USER = "yourgmail@gmail.com";
+const EMAIL_PASS = "your_app_password_here";
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  crypto.randomBytes(64).toString("hex");
+/* =============================
+   BASIC SECURITY
+============================= */
 
-const MAX_PER_HOUR = 27;
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
-const MAX_BODY_SIZE = "8kb";
+app.use(helmet());
+app.use(express.json({ limit: "10kb" }));
 
-/* ================= STATE ================= */
+/* =============================
+   RATE LIMIT
+============================= */
 
-const mailLimits = new Map();
-
-/* ================= BASIC SECURITY ================= */
-
-app.disable("x-powered-by");
-
-app.use(express.json({ limit: MAX_BODY_SIZE }));
-app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
-app.use(express.static(path.join(__dirname, "public")));
-
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "strict",
-      maxAge: 60 * 60 * 1000
-    }
-  })
-);
-
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false
 });
+app.use(limiter);
 
-/* ================= HELPERS ================= */
+/* =============================
+   MAIL TRANSPORT
+============================= */
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-
-const isValidEmail = email =>
-  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-function cleanText(text = "", max = 500) {
-  return text
-    .replace(/<[^>]*>/g, "")
-    .replace(/[^\x00-\x7F]/g, "")
-    .replace(/\s{3,}/g, " ")
-    .trim()
-    .slice(0, max);
-}
-
-function checkHourlyLimit(email, count) {
-  const now = Date.now();
-  const record = mailLimits.get(email);
-
-  if (!record || now - record.start > 3600000) {
-    mailLimits.set(email, { count: 0, start: now });
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: EMAIL_USER,
+    pass: EMAIL_PASS
   }
+});
 
-  const updated = mailLimits.get(email);
-
-  if (updated.count + count > MAX_PER_HOUR) return false;
-
-  updated.count += count;
-  return true;
-}
-
-async function sendBatch(transporter, mails) {
-  let sentCount = 0;
-
-  for (let i = 0; i < mails.length; i += BATCH_SIZE) {
-    const chunk = mails.slice(i, i + BATCH_SIZE);
-
-    for (const mail of chunk) {
-      try {
-        await transporter.sendMail(mail);
-        sentCount++;
-      } catch (err) {
-        console.error("Send error:", err.message);
-      }
-    }
-
-    await delay(BATCH_DELAY);
+/* Verify SMTP once */
+transporter.verify((err) => {
+  if (err) {
+    console.error("SMTP Error:", err.message);
+  } else {
+    console.log("SMTP Ready");
   }
+});
 
-  return sentCount;
+/* =============================
+   HELPERS
+============================= */
+
+function validateEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-/* ================= AUTH ================= */
-
-function requireAuth(req, res, next) {
-  if (req.session.user === ADMIN_CREDENTIAL) return next();
-  return res.redirect("/");
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/* ================= ROUTES ================= */
+/* =============================
+   SEND ROUTE
+============================= */
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/login.html"));
-});
-
-app.post("/login", (req, res) => {
-  const { username, password } = req.body || {};
-
-  if (
-    username === ADMIN_CREDENTIAL &&
-    password === ADMIN_CREDENTIAL
-  ) {
-    req.session.user = ADMIN_CREDENTIAL;
-    return res.json({ success: true });
-  }
-
-  return res.json({ success: false });
-});
-
-app.get("/launcher", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "public/launcher.html"));
-});
-
-app.post("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("connect.sid");
-    res.json({ success: true });
-  });
-});
-
-/* ================= SEND ================= */
-
-app.post("/send", requireAuth, async (req, res) => {
+app.post("/send", async (req, res) => {
   try {
-    const {
-      senderName,
-      email,
-      password,
-      recipients,
-      subject,
-      message
-    } = req.body || {};
+    const { fromName, subject, message, recipients } = req.body;
 
-    if (!email || !password || !recipients)
-      return res.json({ success: false, message: "Missing fields" });
+    if (!fromName || !subject || !message) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
 
-    if (!isValidEmail(email))
-      return res.json({ success: false, message: "Invalid email" });
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: "Recipients must be array" });
+    }
 
-    const recipientList = [
-      ...new Set(
-        recipients
-          .split(/[\n,]+/)
-          .map(r => r.trim())
-          .filter(isValidEmail)
-      )
-    ];
+    const validRecipients = recipients.filter(validateEmail);
 
-    if (!recipientList.length)
-      return res.json({ success: false, message: "No valid recipients" });
+    if (validRecipients.length === 0) {
+      return res.status(400).json({ error: "No valid emails" });
+    }
 
-    if (!checkHourlyLimit(email, recipientList.length))
-      return res.json({
-        success: false,
-        message: `Limit ${MAX_PER_HOUR}/hour exceeded`
-      });
+    let sentCount = 0;
+    let failedCount = 0;
 
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: { user: email, pass: password }
-    });
+    const BATCH_SIZE = 6;
+    const BATCH_DELAY = 320;
 
-    await transporter.verify();
+    for (let i = 0; i < validRecipients.length; i += BATCH_SIZE) {
 
-    const mails = recipientList.map(to => ({
-      from: `"${cleanText(senderName, 40) || "Sender"}" <${email}>`,
-      to,
-      subject: cleanText(subject, 120) || "Message",
-      text: cleanText(message, 1000)
-    }));
+      const batch = validRecipients.slice(i, i + BATCH_SIZE);
 
-    const sentCount = await sendBatch(transporter, mails);
+      await Promise.all(
+        batch.map(async (email) => {
+          try {
+            await transporter.sendMail({
+              from: `"${fromName}" <${EMAIL_USER}>`,
+              to: email,
+              subject: subject,
+              text: message
+            });
 
-    return res.json({
+            sentCount++;
+          } catch (err) {
+            failedCount++;
+          }
+        })
+      );
+
+      await delay(BATCH_DELAY);
+    }
+
+    return res.status(200).json({
       success: true,
+      sent: sentCount,
+      failed: failedCount,
       message: `Send ${sentCount}`
     });
 
-  } catch (err) {
-    console.error(err.message);
-    return res.json({
-      success: false,
-      message: "Sending failed"
+  } catch (error) {
+    console.error("Server Error:", error.message);
+    return res.status(500).json({
+      error: "Internal Server Error"
     });
   }
 });
 
-/* ================= START ================= */
+/* =============================
+   ROOT CHECK
+============================= */
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "Server Running",
+    email: EMAIL_USER
+  });
+});
+
+/* =============================
+   START SERVER
+============================= */
 
 app.listen(PORT, () => {
-  console.log("Mail server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });
