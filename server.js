@@ -1,6 +1,7 @@
 const express = require("express");
 const session = require("express-session");
 const bodyParser = require("body-parser");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,13 +12,10 @@ const ADMIN_PASSWORD = "@##2588^$$^O^%%^";
 
 /* ================= LIMIT SETTINGS ================= */
 const DAILY_LIMIT = 9500;
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300; // ms
-
 let sentToday = 0;
 let lastReset = Date.now();
 
-/* ================= RESET EVERY 24 HOURS ================= */
+/* ================= RESET 24 HOURS ================= */
 function resetDailyLimit() {
   const now = Date.now();
   if (now - lastReset >= 24 * 60 * 60 * 1000) {
@@ -42,6 +40,10 @@ app.use(
   })
 );
 
+/* ================= STATIC FILES ================= */
+app.use("/public", express.static(path.join(__dirname, "public")));
+
+/* ================= AUTH CHECK ================= */
 function isAuthenticated(req, res, next) {
   if (req.session.user === ADMIN_USERNAME) return next();
   return res.redirect("/login");
@@ -50,21 +52,15 @@ function isAuthenticated(req, res, next) {
 /* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
-  if (req.session.user) return res.redirect("/dashboard");
+  if (req.session.user) {
+    return res.redirect("/launcher");
+  }
   res.redirect("/login");
 });
 
+/* LOGIN PAGE */
 app.get("/login", (req, res) => {
-  const error = req.query.error ? "<p style='color:red;'>Invalid Credentials</p>" : "";
-  res.send(`
-    <h2>🔐 Login</h2>
-    ${error}
-    <form method="POST" action="/login">
-      <input name="username" placeholder="Username" required /><br/><br/>
-      <input type="password" name="password" placeholder="Password" required /><br/><br/>
-      <button>Login</button>
-    </form>
-  `);
+  res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
 app.post("/login", (req, res) => {
@@ -72,73 +68,28 @@ app.post("/login", (req, res) => {
 
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     req.session.user = ADMIN_USERNAME;
-    return res.redirect("/dashboard");
+    return res.redirect("/launcher");
   }
-  return res.redirect("/login?error=1");
+
+  res.redirect("/login");
 });
 
-/* ================= DASHBOARD (Launcher) ================= */
-
-app.get("/dashboard", isAuthenticated, (req, res) => {
+/* LAUNCHER PAGE */
+app.get("/launcher", isAuthenticated, (req, res) => {
   resetDailyLimit();
-
-  res.send(`
-    <h2>🚀 Email Launcher</h2>
-    <p>Daily Limit: ${sentToday} / ${DAILY_LIMIT}</p>
-
-    <form method="POST" action="/send">
-      <input type="number" name="count" placeholder="How many emails?" required />
-      <button type="submit">Start Sending</button>
-    </form>
-
-    <br/>
-    <a href="/logout">Logout</a>
-  `);
+  res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
-/* ================= SEND SIMULATION ================= */
-
-app.post("/send", isAuthenticated, async (req, res) => {
+/* DAILY STATUS API */
+app.get("/status", isAuthenticated, (req, res) => {
   resetDailyLimit();
-
-  let count = parseInt(req.body.count);
-
-  if (!count || count <= 0) {
-    return res.send("Invalid number.");
-  }
-
-  if (sentToday + count > DAILY_LIMIT) {
-    return res.send("❌ Daily limit exceeded (9500 max per 24h)");
-  }
-
-  let sent = 0;
-
-  async function sendBatch() {
-    for (let i = 0; i < BATCH_SIZE && sent < count; i++) {
-      sent++;
-      sentToday++;
-    }
-
-    if (sent < count) {
-      setTimeout(sendBatch, BATCH_DELAY);
-    }
-  }
-
-  sendBatch();
-
-  res.send(`
-    <h3>✅ Sending Started</h3>
-    <p>Requested: ${count}</p>
-    <p>Batch Size: ${BATCH_SIZE}</p>
-    <p>Batch Delay: ${BATCH_DELAY}ms</p>
-    <p>Total Sent Today: ${sentToday}</p>
-    <br/>
-    <a href="/dashboard">Back</a>
-  `);
+  res.json({
+    sentToday,
+    dailyLimit: DAILY_LIMIT
+  });
 });
 
-/* ================= LOGOUT ================= */
-
+/* LOGOUT */
 app.get("/logout", (req, res) => {
   req.session.destroy(() => {
     res.redirect("/login");
