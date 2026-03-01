@@ -5,12 +5,10 @@ const nodemailer = require("nodemailer");
 const path = require("path");
 const crypto = require("crypto");
 
-/* ===================================================
-   CONFIG
-=================================================== */
-
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+/* ================= CONFIG ================= */
 
 const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
 
@@ -22,21 +20,12 @@ const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
 const MAX_BODY_SIZE = "8kb";
-const MAX_LOGIN_ATTEMPTS = 5;
-const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
-const MAX_IP_REQUESTS = 60;
 
-/* ===================================================
-   IN-MEMORY STORE
-=================================================== */
+/* ================= STATE ================= */
 
 const mailLimits = new Map();
-const loginAttempts = new Map();
-const ipRateLimit = new Map();
 
-/* ===================================================
-   BASIC HARDENING
-=================================================== */
+/* ================= BASIC SECURITY ================= */
 
 app.disable("x-powered-by");
 
@@ -51,7 +40,6 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false,
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
@@ -62,35 +50,10 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("Permissions-Policy", "geolocation=()");
   next();
 });
 
-/* ===================================================
-   GLOBAL RATE LIMIT
-=================================================== */
-
-app.use((req, res, next) => {
-  const ip = req.ip;
-  const now = Date.now();
-  const record = ipRateLimit.get(ip);
-
-  if (!record || now - record.start > 60000) {
-    ipRateLimit.set(ip, { count: 1, start: now });
-    return next();
-  }
-
-  if (record.count >= MAX_IP_REQUESTS) {
-    return res.status(429).send("Too many requests");
-  }
-
-  record.count++;
-  next();
-});
-
-/* ===================================================
-   HELPERS
-=================================================== */
+/* ================= HELPERS ================= */
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -101,7 +64,7 @@ function cleanText(text = "", max = 500) {
   return text
     .replace(/<[^>]*>/g, "")
     .replace(/[^\x00-\x7F]/g, "")
-    .replace(/\s{3,}/g, "  ")
+    .replace(/\s{3,}/g, " ")
     .trim()
     .slice(0, max);
 }
@@ -123,12 +86,15 @@ function checkHourlyLimit(email, count) {
 }
 
 async function sendBatch(transporter, mails) {
+  let sentCount = 0;
+
   for (let i = 0; i < mails.length; i += BATCH_SIZE) {
     const chunk = mails.slice(i, i + BATCH_SIZE);
 
     for (const mail of chunk) {
       try {
         await transporter.sendMail(mail);
+        sentCount++;
       } catch (err) {
         console.error("Send error:", err.message);
       }
@@ -136,20 +102,18 @@ async function sendBatch(transporter, mails) {
 
     await delay(BATCH_DELAY);
   }
+
+  return sentCount;
 }
 
-/* ===================================================
-   AUTH
-=================================================== */
+/* ================= AUTH ================= */
 
 function requireAuth(req, res, next) {
   if (req.session.user === ADMIN_CREDENTIAL) return next();
   return res.redirect("/");
 }
 
-/* ===================================================
-   ROUTES
-=================================================== */
+/* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
@@ -157,28 +121,13 @@ app.get("/", (req, res) => {
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body || {};
-  const ip = req.ip;
-  const now = Date.now();
 
-  const record = loginAttempts.get(ip);
-
-  if (record && record.blockUntil > now) {
-    return res.json({ success: false, message: "Try later" });
-  }
-
-  if (username === ADMIN_CREDENTIAL && password === ADMIN_CREDENTIAL) {
-    loginAttempts.delete(ip);
+  if (
+    username === ADMIN_CREDENTIAL &&
+    password === ADMIN_CREDENTIAL
+  ) {
     req.session.user = ADMIN_CREDENTIAL;
     return res.json({ success: true });
-  }
-
-  if (!record) {
-    loginAttempts.set(ip, { count: 1 });
-  } else {
-    record.count++;
-    if (record.count >= MAX_LOGIN_ATTEMPTS) {
-      record.blockUntil = now + LOGIN_BLOCK_TIME;
-    }
   }
 
   return res.json({ success: false });
@@ -195,9 +144,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ===================================================
-   SEND MAIL
-=================================================== */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -211,10 +158,10 @@ app.post("/send", requireAuth, async (req, res) => {
     } = req.body || {};
 
     if (!email || !password || !recipients)
-      return res.json({ success: false });
+      return res.json({ success: false, message: "Missing fields" });
 
     if (!isValidEmail(email))
-      return res.json({ success: false });
+      return res.json({ success: false, message: "Invalid email" });
 
     const recipientList = [
       ...new Set(
@@ -226,17 +173,19 @@ app.post("/send", requireAuth, async (req, res) => {
     ];
 
     if (!recipientList.length)
-      return res.json({ success: false });
+      return res.json({ success: false, message: "No valid recipients" });
 
     if (!checkHourlyLimit(email, recipientList.length))
-      return res.json({ success: false });
+      return res.json({
+        success: false,
+        message: `Limit ${MAX_PER_HOUR}/hour exceeded`
+      });
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: { user: email, pass: password },
-      tls: { rejectUnauthorized: true }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
@@ -248,23 +197,24 @@ app.post("/send", requireAuth, async (req, res) => {
       text: cleanText(message, 1000)
     }));
 
-    await sendBatch(transporter, mails);
+    const sentCount = await sendBatch(transporter, mails);
 
     return res.json({
       success: true,
-      sent: recipientList.length
+      message: `Send ${sentCount}`
     });
 
   } catch (err) {
-    console.error("Fatal:", err.message);
-    return res.json({ success: false });
+    console.error(err.message);
+    return res.json({
+      success: false,
+      message: "Sending failed"
+    });
   }
 });
 
-/* ===================================================
-   START
-=================================================== */
+/* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure mail server running on port " + PORT);
+  console.log("Mail server running on port " + PORT);
 });
