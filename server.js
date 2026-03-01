@@ -1,32 +1,32 @@
-require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
 const nodemailer = require("nodemailer");
-const path = require("path");
-const crypto = require("crypto");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 8080;
 
 /* ================= CONFIG ================= */
 
-const {
-  SESSION_SECRET,
-  ADMIN_USERNAME,
-  ADMIN_PASSWORD,
-  SMTP_HOST,
-  SMTP_PORT,
-  SMTP_USER,
-  SMTP_PASS
-} = process.env;
+// 🔐 CHANGE THESE VALUES
+const ADMIN_USERNAME = "admin";
+const ADMIN_PASSWORD = "StrongPassword123!";
 
-if (!SESSION_SECRET || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
-  console.error("Missing environment variables");
-  process.exit(1);
-}
+// ⚠️ Gmail App Password use karein (normal password nahi)
+const SMTP_CONFIG = {
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: "yourgmail@gmail.com",
+    pass: "your_app_password_here"
+  }
+};
 
+const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 const MAX_PER_HOUR = 20;
 const MAX_BODY_SIZE = "8kb";
 
@@ -50,20 +50,18 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false, // true if HTTPS
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
   })
 );
 
-const apiLimiter = rateLimit({
+const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50,
-  message: "Too many requests"
+  max: 50
 });
 
-app.use("/send", apiLimiter);
+app.use("/send", limiter);
 
 /* ================= HELPERS ================= */
 
@@ -141,43 +139,34 @@ app.post("/send", requireAuth, async (req, res) => {
     if (!recipientList.length)
       return res.json({ success: false, message: "No valid recipients" });
 
-    if (!checkHourlyLimit(SMTP_USER, recipientList.length))
+    if (!checkHourlyLimit(SMTP_CONFIG.auth.user, recipientList.length))
       return res.json({
         success: false,
         message: "Hourly limit exceeded"
       });
 
-    const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: true,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS
-      }
-    });
-
+    const transporter = nodemailer.createTransport(SMTP_CONFIG);
     await transporter.verify();
 
-    let sentCount = 0;
+    let sent = 0;
 
     for (const to of recipientList) {
       await transporter.sendMail({
-        from: SMTP_USER,
+        from: SMTP_CONFIG.auth.user,
         to,
         subject: cleanText(subject, 120),
         text: cleanText(message, 1000)
       });
-      sentCount++;
+      sent++;
     }
 
     return res.json({
       success: true,
-      message: `Sent ${sentCount} emails`
+      message: `Sent ${sent} emails`
     });
 
   } catch (err) {
-    console.error(err);
+    console.error(err.message);
     return res.json({
       success: false,
       message: "Sending failed"
