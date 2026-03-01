@@ -8,31 +8,32 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/* ================= CORE ================= */
+/* ================= SECURITY CORE ================= */
 
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
 /* ================= CONFIG ================= */
 
-const ADMIN = "@##2588^$$^*O*^%%^";
+const ADMIN = "@##2588^$$^*O*^%%^"; // same login id & password
+
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(64).toString("hex");
 
 const DAILY_LIMIT = 500;
 const SESSION_LIMIT = 300;
 
-const BATCH_SIZE = 5;   // original speed
-const BATCH_DELAY = 300; // original delay
+const BATCH_SIZE = 5;     // SAME SPEED
+const BATCH_DELAY = 300;  // SAME DELAY
 
 const LOGIN_LIMIT = 5;
-const LOGIN_BLOCK = 15 * 60 * 1000;
+const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
-/* ================= STATE ================= */
+/* ================= STATE TRACKERS ================= */
 
 const dailyTracker = new Map();
-const loginTracker = new Map();
-const ipTracker = new Map();
+const loginAttempts = new Map();
+const ipRateTracker = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
@@ -51,34 +52,36 @@ app.use(
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
-      maxAge: 60 * 60 * 1000
+      maxAge: 60 * 60 * 1000 // 1 hour auto logout
     }
   })
 );
 
-/* ================= IP RATE LIMIT ================= */
+/* ================= GLOBAL IP RATE PROTECTION ================= */
 
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
   const windowTime = 60 * 1000;
 
-  if (!ipTracker.has(ip)) ipTracker.set(ip, []);
+  if (!ipRateTracker.has(ip)) ipRateTracker.set(ip, []);
 
-  const hits = ipTracker.get(ip).filter(t => now - t < windowTime);
+  const requests = ipRateTracker
+    .get(ip)
+    .filter(t => now - t < windowTime);
 
-  if (hits.length > 100)
+  if (requests.length > 120)
     return res.status(429).send("Too many requests");
 
-  hits.push(now);
-  ipTracker.set(ip, hits);
+  requests.push(now);
+  ipRateTracker.set(ip, requests);
   next();
 });
 
 /* ================= HELPERS ================= */
 
 function delay(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function sanitize(text = "", max = 1000) {
@@ -89,11 +92,11 @@ function sanitize(text = "", max = 1000) {
     .slice(0, max);
 }
 
-function validEmail(email) {
+function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function checkDaily(email, amount) {
+function checkDailyLimit(email, count) {
   const now = Date.now();
   const record = dailyTracker.get(email);
 
@@ -102,13 +105,14 @@ function checkDaily(email, amount) {
   }
 
   const updated = dailyTracker.get(email);
-  if (updated.count + amount > DAILY_LIMIT) return false;
 
-  updated.count += amount;
+  if (updated.count + count > DAILY_LIMIT) return false;
+
+  updated.count += count;
   return true;
 }
 
-function auth(req, res, next) {
+function requireAuth(req, res, next) {
   if (req.session.user === ADMIN) return next();
   return res.redirect("/");
 }
@@ -119,20 +123,20 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-/* LOGIN */
+/* ================= LOGIN ================= */
 
 app.post("/login", (req, res) => {
   const ip = req.ip;
   const now = Date.now();
-  const attempt = loginTracker.get(ip);
+  const record = loginAttempts.get(ip);
 
-  if (attempt && attempt.block > now)
+  if (record && record.blockUntil > now)
     return res.json({ success: false });
 
   const { username, password } = req.body || {};
 
   if (username === ADMIN && password === ADMIN) {
-    loginTracker.delete(ip);
+    loginAttempts.delete(ip);
 
     req.session.user = ADMIN;
     req.session.sent = 0;
@@ -142,22 +146,26 @@ app.post("/login", (req, res) => {
     );
   }
 
-  if (!attempt) {
-    loginTracker.set(ip, { count: 1, block: 0 });
+  if (!record) {
+    loginAttempts.set(ip, { count: 1, blockUntil: 0 });
   } else {
-    attempt.count++;
-    if (attempt.count >= LOGIN_LIMIT) {
-      attempt.block = now + LOGIN_BLOCK;
-      attempt.count = 0;
+    record.count++;
+    if (record.count >= LOGIN_LIMIT) {
+      record.blockUntil = now + LOGIN_BLOCK_TIME;
+      record.count = 0;
     }
   }
 
   return res.json({ success: false });
 });
 
-app.get("/launcher", auth, (req, res) => {
+/* ================= LAUNCHER ================= */
+
+app.get("/launcher", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
+
+/* ================= LOGOUT ================= */
 
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
@@ -166,30 +174,38 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SEND EMAIL ================= */
 
-app.post("/send", auth, async (req, res) => {
+app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { senderName, email, password, recipients, subject, message } =
-      req.body || {};
+    const {
+      senderName,
+      email,
+      password,
+      recipients,
+      subject,
+      message
+    } = req.body || {};
 
-    if (!validEmail(email)) return res.json({ success: false });
+    if (!isValidEmail(email))
+      return res.json({ success: false });
 
-    const list = [
+    const recipientList = [
       ...new Set(
         recipients
           .split(/[\n,]+/)
           .map(r => r.trim())
-          .filter(validEmail)
+          .filter(isValidEmail)
       )
     ];
 
-    if (!list.length) return res.json({ success: false });
-
-    if (req.session.sent + list.length > SESSION_LIMIT)
+    if (!recipientList.length)
       return res.json({ success: false });
 
-    if (!checkDaily(email, list.length))
+    if (req.session.sent + recipientList.length > SESSION_LIMIT)
+      return res.json({ success: false });
+
+    if (!checkDailyLimit(email, recipientList.length))
       return res.json({ success: false });
 
     const transporter = nodemailer.createTransport({
@@ -202,10 +218,10 @@ app.post("/send", auth, async (req, res) => {
 
     await transporter.verify();
 
-    let sent = 0;
+    let successCount = 0;
 
-    for (let i = 0; i < list.length; i += BATCH_SIZE) {
-      const batch = list.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
+      const batch = recipientList.slice(i, i + BATCH_SIZE);
 
       const results = await Promise.allSettled(
         batch.map(to =>
@@ -219,20 +235,20 @@ app.post("/send", auth, async (req, res) => {
       );
 
       results.forEach(r => {
-        if (r.status === "fulfilled") sent++;
+        if (r.status === "fulfilled") successCount++;
       });
 
-      await delay(BATCH_DELAY);
+      await delay(BATCH_DELAY); // SAME SPEED
     }
 
-    req.session.sent += sent;
+    req.session.sent += successCount;
 
     return res.json({
       success: true,
-      message: `Sent ${sent}`
+      message: `Send ${successCount}`
     });
 
-  } catch {
+  } catch (err) {
     return res.json({ success: false });
   }
 });
@@ -240,5 +256,5 @@ app.post("/send", auth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Server Running on Port " + PORT);
+  console.log("Server running on port " + PORT);
 });
