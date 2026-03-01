@@ -8,35 +8,36 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/* ================= SECURITY CORE ================= */
+/* ================= CORE ================= */
 
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-/* ================= CONSTANTS ================= */
+/* ================= CONFIG ================= */
 
 const ADMIN = "@##2588^$$^*O*^%%^";
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(64).toString("hex");
 
-const DAILY_LIMIT = 9500;
-const SESSION_LIMIT = 2000;
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
+const DAILY_LIMIT = 500;
+const SESSION_LIMIT = 300;
 
-const LOGIN_ATTEMPTS_LIMIT = 5;
-const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
+const BATCH_SIZE = 5;   // original speed
+const BATCH_DELAY = 300; // original delay
+
+const LOGIN_LIMIT = 5;
+const LOGIN_BLOCK = 15 * 60 * 1000;
 
 /* ================= STATE ================= */
 
 const dailyTracker = new Map();
-const loginAttempts = new Map();
-const ipRateMap = new Map();
+const loginTracker = new Map();
+const ipTracker = new Map();
 
 /* ================= MIDDLEWARE ================= */
 
-app.use(express.json({ limit: "15kb" }));
-app.use(express.urlencoded({ extended: false, limit: "15kb" }));
+app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -55,30 +56,24 @@ app.use(
   })
 );
 
-/* ================= GLOBAL PROTECTION ================= */
+/* ================= IP RATE LIMIT ================= */
 
-function rateLimitIP(req, res, next) {
+app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
   const windowTime = 60 * 1000;
-  const limit = 100;
 
-  if (!ipRateMap.has(ip)) {
-    ipRateMap.set(ip, []);
-  }
+  if (!ipTracker.has(ip)) ipTracker.set(ip, []);
 
-  const timestamps = ipRateMap.get(ip).filter(t => now - t < windowTime);
+  const hits = ipTracker.get(ip).filter(t => now - t < windowTime);
 
-  if (timestamps.length > limit) {
-    return res.status(429).json({ success: false });
-  }
+  if (hits.length > 100)
+    return res.status(429).send("Too many requests");
 
-  timestamps.push(now);
-  ipRateMap.set(ip, timestamps);
+  hits.push(now);
+  ipTracker.set(ip, hits);
   next();
-}
-
-app.use(rateLimitIP);
+});
 
 /* ================= HELPERS ================= */
 
@@ -86,8 +81,8 @@ function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function sanitize(str = "", max = 1000) {
-  return str
+function sanitize(text = "", max = 1000) {
+  return text
     .replace(/[\r\n]/g, "")
     .replace(/<[^>]*>/g, "")
     .trim()
@@ -98,7 +93,7 @@ function validEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function checkDaily(email, count) {
+function checkDaily(email, amount) {
   const now = Date.now();
   const record = dailyTracker.get(email);
 
@@ -107,10 +102,9 @@ function checkDaily(email, count) {
   }
 
   const updated = dailyTracker.get(email);
+  if (updated.count + amount > DAILY_LIMIT) return false;
 
-  if (updated.count + count > DAILY_LIMIT) return false;
-
-  updated.count += count;
+  updated.count += amount;
   return true;
 }
 
@@ -125,21 +119,20 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
 });
 
-/* LOGIN PROTECTION */
+/* LOGIN */
+
 app.post("/login", (req, res) => {
   const ip = req.ip;
   const now = Date.now();
+  const attempt = loginTracker.get(ip);
 
-  const attempt = loginAttempts.get(ip);
-
-  if (attempt && attempt.blockUntil > now) {
+  if (attempt && attempt.block > now)
     return res.json({ success: false });
-  }
 
   const { username, password } = req.body || {};
 
   if (username === ADMIN && password === ADMIN) {
-    loginAttempts.delete(ip);
+    loginTracker.delete(ip);
 
     req.session.user = ADMIN;
     req.session.sent = 0;
@@ -150,12 +143,11 @@ app.post("/login", (req, res) => {
   }
 
   if (!attempt) {
-    loginAttempts.set(ip, { count: 1, blockUntil: 0 });
+    loginTracker.set(ip, { count: 1, block: 0 });
   } else {
-    attempt.count += 1;
-
-    if (attempt.count >= LOGIN_ATTEMPTS_LIMIT) {
-      attempt.blockUntil = now + LOGIN_BLOCK_TIME;
+    attempt.count++;
+    if (attempt.count >= LOGIN_LIMIT) {
+      attempt.block = now + LOGIN_BLOCK;
       attempt.count = 0;
     }
   }
@@ -174,7 +166,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= MAIL SEND ================= */
+/* ================= SEND ================= */
 
 app.post("/send", auth, async (req, res) => {
   try {
@@ -203,9 +195,9 @@ app.post("/send", auth, async (req, res) => {
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: { user: email, pass: password },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 15000
+      pool: true,
+      maxConnections: 2,
+      maxMessages: 100
     });
 
     await transporter.verify();
@@ -215,24 +207,31 @@ app.post("/send", auth, async (req, res) => {
     for (let i = 0; i < list.length; i += BATCH_SIZE) {
       const batch = list.slice(i, i + BATCH_SIZE);
 
-      for (const to of batch) {
-        try {
-          await transporter.sendMail({
+      const results = await Promise.allSettled(
+        batch.map(to =>
+          transporter.sendMail({
             from: `"${sanitize(senderName, 40) || "Sender"}" <${email}>`,
             to,
-            subject: sanitize(subject, 150),
-            text: sanitize(message, 3000)
-          });
-          sent++;
-        } catch {}
-      }
+            subject: sanitize(subject, 120),
+            text: sanitize(message, 2000)
+          })
+        )
+      );
 
-      await delay(BATCH_DELAY + Math.floor(Math.random() * 200));
+      results.forEach(r => {
+        if (r.status === "fulfilled") sent++;
+      });
+
+      await delay(BATCH_DELAY);
     }
 
     req.session.sent += sent;
 
-    return res.json({ success: true, message: `Sent ${sent}` });
+    return res.json({
+      success: true,
+      message: `Sent ${sent}`
+    });
+
   } catch {
     return res.json({ success: false });
   }
@@ -241,5 +240,5 @@ app.post("/send", auth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Ultra Secure Server Running on " + PORT);
+  console.log("Server Running on Port " + PORT);
 });
