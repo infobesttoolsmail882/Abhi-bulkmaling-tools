@@ -1,172 +1,124 @@
-require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
 const bodyParser = require("body-parser");
-const nodemailer = require("nodemailer");
-const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
-/* ================= CONFIG ================= */
+/* ================================
+   LOGIN CREDENTIALS (SAME ID/PASS)
+================================ */
+const ADMIN_USERNAME = "@##2588^$$^O^%%^";
+const ADMIN_PASSWORD = "@##2588^$$^O^%%^";
 
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "StrongPassword123!";
-
-const SMTP_USER = "yourgmail@gmail.com";
-const SMTP_PASS = "your_app_password_here";
-
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
-const DAILY_LIMIT = 9500;
-const SESSION_TIMEOUT = 60 * 60 * 1000;
-
-/* ================= STATE ================= */
-
-let dailyCount = 0;
-let dailyStart = Date.now();
-
-/* ================= MIDDLEWARE ================= */
-
-app.use(bodyParser.json({ limit: "10kb" }));
-app.use(bodyParser.urlencoded({ extended: false, limit: "10kb" }));
-
-app.use(express.static(path.join(__dirname, "public")));
+/* ================================
+   MIDDLEWARE
+================================ */
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
 app.use(
   session({
-    secret: "secure_random_key_12345",
+    secret: "super_secure_secret_key_2026",
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      maxAge: SESSION_TIMEOUT
+      maxAge: 60 * 60 * 1000 // 1 hour
     }
   })
 );
 
-/* ================= ROOT FIX ================= */
+/* ================================
+   AUTH CHECK
+================================ */
+function isAuthenticated(req, res, next) {
+  if (req.session.user === ADMIN_USERNAME) {
+    return next();
+  }
+  return res.redirect("/login");
+}
 
-// 👇 THIS FIXES "Cannot GET /"
+/* ================================
+   ROUTES
+================================ */
+
+// Root Route
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/login.html"));
+  if (req.session.user) {
+    return res.redirect("/dashboard");
+  }
+  res.redirect("/login");
 });
 
-/* ================= HELPERS ================= */
+// Login Page
+app.get("/login", (req, res) => {
+  const error = req.query.error ? "<p style='color:red;'>Invalid Credentials</p>" : "";
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
+  res.send(`
+    <html>
+    <head>
+      <title>Login</title>
+      <style>
+        body { font-family: Arial; background:#f4f6f9; text-align:center; padding-top:100px; }
+        .box { background:white; padding:30px; display:inline-block; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1); }
+        input { padding:8px; margin:5px; width:250px; }
+        button { padding:8px 15px; cursor:pointer; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <h2>🔐 Secure Login</h2>
+        ${error}
+        <form method="POST" action="/login">
+          <input type="text" name="username" placeholder="Username" required /><br/>
+          <input type="password" name="password" placeholder="Password" required /><br/>
+          <button type="submit">Login</button>
+        </form>
+      </div>
+    </body>
+    </html>
+  `);
+});
 
-const isValidEmail = email =>
-  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-function resetDailyIfNeeded() {
-  if (Date.now() - dailyStart >= 24 * 60 * 60 * 1000) {
-    dailyCount = 0;
-    dailyStart = Date.now();
-  }
-}
-
-function requireAuth(req, res, next) {
-  if (!req.session.user) {
-    return res.status(401).json({
-      success: false,
-      message: "Session expired"
-    });
-  }
-  next();
-}
-
-/* ================= AUTH ================= */
-
+// Login POST
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     req.session.user = ADMIN_USERNAME;
-    return res.json({ success: true });
+    return res.redirect("/dashboard");
   }
 
-  res.json({ success: false });
+  return res.redirect("/login?error=1");
 });
 
-app.post("/logout", (req, res) => {
+// Dashboard
+app.get("/dashboard", isAuthenticated, (req, res) => {
+  res.send(`
+    <html>
+    <head>
+      <title>Dashboard</title>
+    </head>
+    <body style="font-family:Arial;text-align:center;padding-top:100px;">
+      <h2>✅ Login Successful</h2>
+      <p>Welcome Admin</p>
+      <a href="/logout">Logout</a>
+    </body>
+    </html>
+  `);
+});
+
+// Logout
+app.get("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.json({ success: true });
+    res.redirect("/login");
   });
 });
 
-/* ================= SEND MAIL ================= */
-
-app.post("/send", requireAuth, async (req, res) => {
-  try {
-    resetDailyIfNeeded();
-
-    const { recipients, subject, message } = req.body;
-
-    if (!recipients || !subject || !message) {
-      return res.json({ success: false, message: "Missing fields" });
-    }
-
-    const emailList = [
-      ...new Set(
-        recipients
-          .split(/[\n,]+/)
-          .map(e => e.trim())
-          .filter(isValidEmail)
-      )
-    ];
-
-    if (!emailList.length) {
-      return res.json({ success: false, message: "No valid emails" });
-    }
-
-    if (dailyCount + emailList.length > DAILY_LIMIT) {
-      return res.json({
-        success: false,
-        message: "24 hour limit exceeded"
-      });
-    }
-
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS
-      }
-    });
-
-    await transporter.verify();
-
-    let sent = 0;
-
-    for (let i = 0; i < emailList.length; i += BATCH_SIZE) {
-      const batch = emailList.slice(i, i + BATCH_SIZE);
-
-      for (const to of batch) {
-        await transporter.sendMail({
-          from: SMTP_USER,
-          to,
-          subject: subject.substring(0, 120),
-          text: message.substring(0, 2000)
-        });
-
-        sent++;
-        dailyCount++;
-      }
-
-      await delay(BATCH_DELAY);
-    }
-
-    res.json({ success: true, sent });
-
-  } catch (err) {
-    console.error(err.message);
-    res.json({ success: false, message: "Sending failed" });
-  }
-});
-
-/* ================= START ================= */
-
+/* ================================
+   START SERVER
+================================ */
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
