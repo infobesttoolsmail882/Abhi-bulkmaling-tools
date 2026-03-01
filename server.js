@@ -1,8 +1,8 @@
+require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
+const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
 const path = require("path");
 
 const app = express();
@@ -10,76 +10,67 @@ const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-// 🔐 CHANGE THESE
+// 🔐 CHANGE THESE VALUES
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "StrongPassword123!";
 
-// Gmail App Password (not normal password)
+// Gmail APP password use karein
 const SMTP_USER = "yourgmail@gmail.com";
 const SMTP_PASS = "your_app_password_here";
 
-// Sending Control
+// Sending controls
 const BATCH_SIZE = 5;
-const BATCH_DELAY = 300; // ms between batches
+const BATCH_DELAY = 300; // milliseconds
 const DAILY_LIMIT = 9500;
 const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
 /* ================= STATE ================= */
 
-let dailyCounter = 0;
-let dailyStartTime = Date.now();
+let dailyCount = 0;
+let dailyStart = Date.now();
 
-/* ================= SECURITY ================= */
+/* ================= MIDDLEWARE ================= */
 
-app.disable("x-powered-by");
-app.use(helmet());
-
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: false, limit: "10kb" }));
+app.use(bodyParser.json({ limit: "10kb" }));
+app.use(bodyParser.urlencoded({ extended: false, limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    secret: "ultra_secure_random_key_123",
+    secret: "very_secure_random_key_12345",
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "strict",
       maxAge: SESSION_TIMEOUT
     }
   })
 );
 
-// Global API limiter
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 50
-  })
-);
-
 /* ================= HELPERS ================= */
+
+const delay = ms => new Promise(res => setTimeout(res, ms));
 
 const isValidEmail = email =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
+function resetDailyIfNeeded() {
+  const now = Date.now();
+  if (now - dailyStart >= 24 * 60 * 60 * 1000) {
+    dailyCount = 0;
+    dailyStart = now;
+  }
+}
+
 function requireAuth(req, res, next) {
   if (!req.session.user) {
-    return res.status(401).json({ success: false, message: "Session expired" });
+    return res.status(401).json({
+      success: false,
+      message: "Session expired"
+    });
   }
   next();
 }
-
-function resetDailyLimitIfNeeded() {
-  const now = Date.now();
-  if (now - dailyStartTime >= 24 * 60 * 60 * 1000) {
-    dailyCounter = 0;
-    dailyStartTime = now;
-  }
-}
-
-const delay = ms => new Promise(res => setTimeout(res, ms));
 
 /* ================= ROUTES ================= */
 
@@ -104,12 +95,16 @@ app.post("/logout", (req, res) => {
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    resetDailyLimitIfNeeded();
+    resetDailyIfNeeded();
 
     const { recipients, subject, message } = req.body;
 
-    if (!recipients || !subject || !message)
-      return res.json({ success: false, message: "Missing fields" });
+    if (!recipients || !subject || !message) {
+      return res.json({
+        success: false,
+        message: "Missing fields"
+      });
+    }
 
     const emailList = [
       ...new Set(
@@ -120,10 +115,14 @@ app.post("/send", requireAuth, async (req, res) => {
       )
     ];
 
-    if (!emailList.length)
-      return res.json({ success: false, message: "No valid emails" });
+    if (!emailList.length) {
+      return res.json({
+        success: false,
+        message: "No valid emails"
+      });
+    }
 
-    if (dailyCounter + emailList.length > DAILY_LIMIT) {
+    if (dailyCount + emailList.length > DAILY_LIMIT) {
       return res.json({
         success: false,
         message: "24 hour limit exceeded"
@@ -152,23 +151,30 @@ app.post("/send", requireAuth, async (req, res) => {
           subject: subject.substring(0, 120),
           text: message.substring(0, 2000)
         });
+
         sent++;
-        dailyCounter++;
+        dailyCount++;
       }
 
       await delay(BATCH_DELAY);
     }
 
-    res.json({ success: true, sent });
+    res.json({
+      success: true,
+      sent
+    });
 
   } catch (err) {
-    console.error("Send error:", err.message);
-    res.json({ success: false, message: "Sending failed" });
+    console.error("Mail error:", err.message);
+    res.json({
+      success: false,
+      message: "Sending failed"
+    });
   }
 });
 
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure server running on port " + PORT);
+  console.log("Server running on port " + PORT);
 });
