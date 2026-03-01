@@ -10,19 +10,16 @@ const PORT = process.env.PORT || 8080;
 
 /* ================= CONFIG ================= */
 
-// 🔐 CHANGE THESE VALUES
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "StrongPassword123!";
 
-// Gmail APP password use karein
 const SMTP_USER = "yourgmail@gmail.com";
 const SMTP_PASS = "your_app_password_here";
 
-// Sending controls
 const BATCH_SIZE = 5;
-const BATCH_DELAY = 300; // milliseconds
+const BATCH_DELAY = 300;
 const DAILY_LIMIT = 9500;
-const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
+const SESSION_TIMEOUT = 60 * 60 * 1000;
 
 /* ================= STATE ================= */
 
@@ -33,11 +30,12 @@ let dailyStart = Date.now();
 
 app.use(bodyParser.json({ limit: "10kb" }));
 app.use(bodyParser.urlencoded({ extended: false, limit: "10kb" }));
+
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
   session({
-    secret: "very_secure_random_key_12345",
+    secret: "secure_random_key_12345",
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -47,18 +45,24 @@ app.use(
   })
 );
 
+/* ================= ROOT FIX ================= */
+
+// 👇 THIS FIXES "Cannot GET /"
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/login.html"));
+});
+
 /* ================= HELPERS ================= */
 
-const delay = ms => new Promise(res => setTimeout(res, ms));
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const isValidEmail = email =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 function resetDailyIfNeeded() {
-  const now = Date.now();
-  if (now - dailyStart >= 24 * 60 * 60 * 1000) {
+  if (Date.now() - dailyStart >= 24 * 60 * 60 * 1000) {
     dailyCount = 0;
-    dailyStart = now;
+    dailyStart = Date.now();
   }
 }
 
@@ -72,7 +76,7 @@ function requireAuth(req, res, next) {
   next();
 }
 
-/* ================= ROUTES ================= */
+/* ================= AUTH ================= */
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
@@ -100,10 +104,7 @@ app.post("/send", requireAuth, async (req, res) => {
     const { recipients, subject, message } = req.body;
 
     if (!recipients || !subject || !message) {
-      return res.json({
-        success: false,
-        message: "Missing fields"
-      });
+      return res.json({ success: false, message: "Missing fields" });
     }
 
     const emailList = [
@@ -116,10 +117,7 @@ app.post("/send", requireAuth, async (req, res) => {
     ];
 
     if (!emailList.length) {
-      return res.json({
-        success: false,
-        message: "No valid emails"
-      });
+      return res.json({ success: false, message: "No valid emails" });
     }
 
     if (dailyCount + emailList.length > DAILY_LIMIT) {
@@ -159,17 +157,11 @@ app.post("/send", requireAuth, async (req, res) => {
       await delay(BATCH_DELAY);
     }
 
-    res.json({
-      success: true,
-      sent
-    });
+    res.json({ success: true, sent });
 
   } catch (err) {
-    console.error("Mail error:", err.message);
-    res.json({
-      success: false,
-      message: "Sending failed"
-    });
+    console.error(err.message);
+    res.json({ success: false, message: "Sending failed" });
   }
 });
 
