@@ -5,9 +5,9 @@ const nodemailer = require("nodemailer");
 const path = require("path");
 const crypto = require("crypto");
 
-/* =======================================================
+/* ===================================================
    CONFIG
-======================================================= */
+=================================================== */
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -16,27 +16,29 @@ const ADMIN_CREDENTIAL = "@##2588^$$^*O*^%%^";
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
-  crypto.randomBytes(32).toString("hex");
+  crypto.randomBytes(64).toString("hex");
 
 const MAX_PER_HOUR = 27;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
-const MAX_BODY_SIZE = "10kb";
+const MAX_BODY_SIZE = "8kb";
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
-const MAX_IP_REQUESTS = 80;
+const MAX_IP_REQUESTS = 60;
 
-/* =======================================================
-   STATE
-======================================================= */
+/* ===================================================
+   IN-MEMORY STORE
+=================================================== */
 
 const mailLimits = new Map();
 const loginAttempts = new Map();
 const ipRateLimit = new Map();
 
-/* =======================================================
-   MIDDLEWARE
-======================================================= */
+/* ===================================================
+   BASIC HARDENING
+=================================================== */
+
+app.disable("x-powered-by");
 
 app.use(express.json({ limit: MAX_BODY_SIZE }));
 app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
@@ -49,22 +51,25 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
+      secure: false,
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
   })
 );
 
-// Security headers
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Permissions-Policy", "geolocation=()");
   next();
 });
 
-// Basic IP rate limit
+/* ===================================================
+   GLOBAL RATE LIMIT
+=================================================== */
+
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
@@ -83,25 +88,25 @@ app.use((req, res, next) => {
   next();
 });
 
-/* =======================================================
+/* ===================================================
    HELPERS
-======================================================= */
+=================================================== */
 
-const delay = ms => new Promise(res => setTimeout(res, ms));
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const isValidEmail = email =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-function sanitizeText(text = "", max = 500) {
+function cleanText(text = "", max = 500) {
   return text
     .replace(/<[^>]*>/g, "")
-    .replace(/[\r\n]{3,}/g, "\n\n")
     .replace(/[^\x00-\x7F]/g, "")
+    .replace(/\s{3,}/g, "  ")
     .trim()
     .slice(0, max);
 }
 
-function checkHourlyLimit(email, amount) {
+function checkHourlyLimit(email, count) {
   const now = Date.now();
   const record = mailLimits.get(email);
 
@@ -111,11 +116,9 @@ function checkHourlyLimit(email, amount) {
 
   const updated = mailLimits.get(email);
 
-  if (updated.count + amount > MAX_PER_HOUR) {
-    return false;
-  }
+  if (updated.count + count > MAX_PER_HOUR) return false;
 
-  updated.count += amount;
+  updated.count += count;
   return true;
 }
 
@@ -127,7 +130,7 @@ async function sendBatch(transporter, mails) {
       try {
         await transporter.sendMail(mail);
       } catch (err) {
-        console.error("Mail error:", err.message);
+        console.error("Send error:", err.message);
       }
     }
 
@@ -135,18 +138,18 @@ async function sendBatch(transporter, mails) {
   }
 }
 
-/* =======================================================
+/* ===================================================
    AUTH
-======================================================= */
+=================================================== */
 
 function requireAuth(req, res, next) {
   if (req.session.user === ADMIN_CREDENTIAL) return next();
   return res.redirect("/");
 }
 
-/* =======================================================
+/* ===================================================
    ROUTES
-======================================================= */
+=================================================== */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
@@ -178,7 +181,7 @@ app.post("/login", (req, res) => {
     }
   }
 
-  return res.json({ success: false, message: "Invalid credentials" });
+  return res.json({ success: false });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -192,9 +195,9 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* =======================================================
-   SEND
-======================================================= */
+/* ===================================================
+   SEND MAIL
+=================================================== */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -207,13 +210,11 @@ app.post("/send", requireAuth, async (req, res) => {
       message
     } = req.body || {};
 
-    if (!email || !password || !recipients) {
-      return res.json({ success: false, message: "Missing fields" });
-    }
+    if (!email || !password || !recipients)
+      return res.json({ success: false });
 
-    if (!isValidEmail(email)) {
-      return res.json({ success: false, message: "Invalid sender email" });
-    }
+    if (!isValidEmail(email))
+      return res.json({ success: false });
 
     const recipientList = [
       ...new Set(
@@ -224,16 +225,11 @@ app.post("/send", requireAuth, async (req, res) => {
       )
     ];
 
-    if (!recipientList.length) {
-      return res.json({ success: false, message: "No valid recipients" });
-    }
+    if (!recipientList.length)
+      return res.json({ success: false });
 
-    if (!checkHourlyLimit(email, recipientList.length)) {
-      return res.json({
-        success: false,
-        message: `Limit ${MAX_PER_HOUR}/hour exceeded`
-      });
-    }
+    if (!checkHourlyLimit(email, recipientList.length))
+      return res.json({ success: false });
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -246,32 +242,29 @@ app.post("/send", requireAuth, async (req, res) => {
     await transporter.verify();
 
     const mails = recipientList.map(to => ({
-      from: `"${sanitizeText(senderName, 40) || "Sender"}" <${email}>`,
+      from: `"${cleanText(senderName, 40) || "Sender"}" <${email}>`,
       to,
-      subject: sanitizeText(subject, 120) || "Message",
-      text: sanitizeText(message, 1000)
+      subject: cleanText(subject, 120) || "Message",
+      text: cleanText(message, 1000)
     }));
 
     await sendBatch(transporter, mails);
 
     return res.json({
       success: true,
-      message: `Sent ${recipientList.length}`
+      sent: recipientList.length
     });
 
   } catch (err) {
-    console.error(err);
-    return res.json({
-      success: false,
-      message: "Sending failed"
-    });
+    console.error("Fatal:", err.message);
+    return res.json({ success: false });
   }
 });
 
-/* =======================================================
+/* ===================================================
    START
-======================================================= */
+=================================================== */
 
 app.listen(PORT, () => {
-  console.log(`Secure server running on port ${PORT}`);
+  console.log("Secure mail server running on port " + PORT);
 });
