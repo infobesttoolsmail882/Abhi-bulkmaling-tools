@@ -18,13 +18,13 @@ const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
 const MAX_BODY_SIZE = "15kb";
-const DAILY_LIMIT = 500;
+const DAILY_LIMIT = 300; // safe realistic cap
 
 /* ================= MEMORY STORE ================= */
 
-const ipRate = new Map();
-const loginRate = new Map();
-const dailyRate = new Map();
+const ipLimiter = new Map();
+const loginLimiter = new Map();
+const dailyLimiter = new Map();
 
 /* ================= BASIC SECURITY ================= */
 
@@ -48,7 +48,7 @@ app.use(
   })
 );
 
-/* Security Headers */
+/* Security headers */
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -57,15 +57,15 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ================= RATE LIMIT ================= */
+/* ================= GLOBAL RATE LIMIT ================= */
 
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const record = ipRate.get(ip);
+  const record = ipLimiter.get(ip);
 
   if (!record || now - record.time > 60000) {
-    ipRate.set(ip, { count: 1, time: now });
+    ipLimiter.set(ip, { count: 1, time: now });
     return next();
   }
 
@@ -93,21 +93,21 @@ function sanitize(text = "", max = 1000) {
     .slice(0, max);
 }
 
-function checkDailyLimit(email, amount) {
+function checkDailyLimit(email, count) {
   const now = Date.now();
-  const record = dailyRate.get(email);
+  const record = dailyLimiter.get(email);
 
   if (!record || now - record.start > 86400000) {
-    dailyRate.set(email, { count: 0, start: now });
+    dailyLimiter.set(email, { count: 0, start: now });
   }
 
-  const updated = dailyRate.get(email);
+  const updated = dailyLimiter.get(email);
 
-  if (updated.count + amount > DAILY_LIMIT) {
+  if (updated.count + count > DAILY_LIMIT) {
     return false;
   }
 
-  updated.count += amount;
+  updated.count += count;
   return true;
 }
 
@@ -127,20 +127,20 @@ app.post("/login", (req, res) => {
   const ip = req.ip;
   const now = Date.now();
 
-  const record = loginRate.get(ip);
+  const record = loginLimiter.get(ip);
 
   if (record && record.blockUntil > now) {
     return res.json({ success: false, message: "Try later" });
   }
 
   if (username === ADMIN_CREDENTIAL && password === ADMIN_CREDENTIAL) {
-    loginRate.delete(ip);
+    loginLimiter.delete(ip);
     req.session.user = ADMIN_CREDENTIAL;
     return res.json({ success: true });
   }
 
   if (!record) {
-    loginRate.set(ip, { count: 1 });
+    loginLimiter.set(ip, { count: 1 });
   } else {
     record.count++;
     if (record.count >= 5) {
@@ -162,7 +162,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= MAIL SEND ================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -230,7 +230,7 @@ app.post("/send", requireAuth, async (req, res) => {
       message: `Send ${sent}`
     });
 
-  } catch (err) {
+  } catch {
     return res.json({
       success: false,
       message: "Sending failed"
@@ -241,5 +241,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Production-grade secure server running on port " + PORT);
+  console.log("High-quality secure server running on port " + PORT);
 });
