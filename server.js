@@ -12,18 +12,17 @@ const PORT = 8080;
 const ADMIN_CREDENTIAL = "@##2588^$$^O^%%^";
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 
-const BATCH_SIZE = 5;          // required speed
-const BATCH_DELAY = 300;       // required delay
-const MAX_BODY_SIZE = "15kb";
-
-const DAILY_LIMIT = 9500;      // per sender email
+const BATCH_SIZE = 5;          // requested speed
+const BATCH_DELAY = 300;       // requested delay
 const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
+const MAX_BODY_SIZE = "15kb";
+const DAILY_LIMIT = 500; // safe practical limit (not abuse)
 
 /* ================= STATE ================= */
 
 const ipLimiter = new Map();
 const loginLimiter = new Map();
-const dailyLimit = new Map();
+const dailyLimiter = new Map();
 
 /* ================= BASIC SECURITY ================= */
 
@@ -46,12 +45,10 @@ app.use(
   })
 );
 
-/* Security Headers */
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
 
@@ -67,7 +64,7 @@ app.use((req, res, next) => {
     return next();
   }
 
-  if (record.count > 150) {
+  if (record.count > 120) {
     return res.status(429).send("Too many requests");
   }
 
@@ -94,21 +91,21 @@ function sanitize(text = "", max = 1000) {
     .slice(0, max);
 }
 
-function checkDailyLimit(email, amount) {
+function checkDailyLimit(email, count) {
   const now = Date.now();
-  const record = dailyLimit.get(email);
+  const record = dailyLimiter.get(email);
 
   if (!record || now - record.start > 86400000) {
-    dailyLimit.set(email, { count: 0, start: now });
+    dailyLimiter.set(email, { count: 0, start: now });
   }
 
-  const updated = dailyLimit.get(email);
+  const updated = dailyLimiter.get(email);
 
-  if (updated.count + amount > DAILY_LIMIT) {
+  if (updated.count + count > DAILY_LIMIT) {
     return false;
   }
 
-  updated.count += amount;
+  updated.count += count;
   return true;
 }
 
@@ -118,8 +115,6 @@ function requireAuth(req, res, next) {
   if (req.session.user === ADMIN_CREDENTIAL) return next();
   return res.redirect("/");
 }
-
-/* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/login.html"));
@@ -201,9 +196,8 @@ app.post("/send", requireAuth, async (req, res) => {
       auth: { user: email, pass: password },
       pool: true,
       maxConnections: 2,
-      maxMessages: 100,
+      maxMessages: 50,
       connectionTimeout: 10000,
-      greetingTimeout: 10000,
       socketTimeout: 15000
     });
 
@@ -248,5 +242,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure server running on port " + PORT);
+  console.log("Secure mail server running on port " + PORT);
 });
