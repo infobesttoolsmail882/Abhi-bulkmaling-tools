@@ -1,7 +1,7 @@
 {
-  "name": "safe-mail-server",
+  "name": "secure-mail-server",
   "version": "1.0.0",
-  "description": "Secure email sender server",
+  "description": "Controlled and secure email sending server",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
