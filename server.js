@@ -4,8 +4,6 @@ const session = require("express-session");
 const nodemailer = require("nodemailer");
 const path = require("path");
 const crypto = require("crypto");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -19,44 +17,45 @@ const SESSION_SECRET =
 const DAILY_LIMIT = 9500;
 const BATCH_SIZE = 5;
 const BATCH_DELAY = 300;
-const LOGIN_MAX_ATTEMPTS = 5;
+const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
-/* ================= MEMORY STORE ================= */
+/* ================= MEMORY ================= */
 
 const dailyUsage = new Map();
 const loginAttempts = new Map();
 
-/* ================= MIDDLEWARE ================= */
+/* ================= BASIC SECURITY HEADERS ================= */
 
-app.use(helmet());
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  next();
+});
 
-app.use(express.json({ limit: "25kb" }));
-app.use(express.urlencoded({ extended: false, limit: "25kb" }));
+app.disable("x-powered-by");
+
+/* ================= BODY PARSER ================= */
+
+app.use(express.json({ limit: "20kb" }));
+app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+/* ================= SESSION ================= */
 
 app.use(
   session({
-    name: "fastmailer.sid",
+    name: "secure.sid",
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false, // true if using HTTPS
       sameSite: "strict",
       maxAge: 60 * 60 * 1000
     }
-  })
-);
-
-app.disable("x-powered-by");
-
-/* IP Rate Protection */
-app.use(
-  rateLimit({
-    windowMs: 60 * 1000,
-    max: 100
   })
 );
 
@@ -78,7 +77,7 @@ function clean(text = "", max = 1000) {
     .slice(0, max);
 }
 
-function checkDailyLimit(email, count) {
+function checkDailyLimit(email, amount) {
   const now = Date.now();
   const record = dailyUsage.get(email);
 
@@ -88,20 +87,15 @@ function checkDailyLimit(email, count) {
 
   const updated = dailyUsage.get(email);
 
-  if (updated.count + count > DAILY_LIMIT) {
-    return false;
-  }
+  if (updated.count + amount > DAILY_LIMIT) return false;
 
-  updated.count += count;
+  updated.count += amount;
   return true;
 }
 
 function requireAuth(req, res, next) {
   if (req.session.user === ADMIN) return next();
-  return res.status(401).json({
-    success: false,
-    message: "Unauthorized"
-  });
+  return res.status(401).json({ success: false });
 }
 
 /* ================= ROUTES ================= */
@@ -119,43 +113,35 @@ app.post("/login", (req, res) => {
   const record = loginAttempts.get(ip);
 
   if (record && record.blockUntil > now) {
-    return res.json({
-      success: false,
-      message: "Too many attempts. Try later."
-    });
+    return res.json({ success: false, message: "Try later" });
   }
 
   if (username === ADMIN && password === ADMIN) {
     loginAttempts.delete(ip);
     req.session.user = ADMIN;
-    return res.json({
-      success: true,
-      message: "Login successful"
-    });
+    return res.json({ success: true });
   }
 
   if (!record) {
     loginAttempts.set(ip, { count: 1 });
   } else {
     record.count++;
-    if (record.count >= LOGIN_MAX_ATTEMPTS) {
+    if (record.count >= MAX_LOGIN_ATTEMPTS) {
       record.blockUntil = now + LOGIN_BLOCK_TIME;
     }
   }
 
-  return res.json({
-    success: false,
-    message: "Invalid credentials"
-  });
+  return res.json({ success: false, message: "Invalid credentials" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "public/launcher.html"));
 });
 
+/* LOGOUT */
 app.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("fastmailer.sid");
+    res.clearCookie("secure.sid");
     res.json({ success: true });
   });
 });
@@ -192,10 +178,7 @@ app.post("/send", requireAuth, async (req, res) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: email, pass: password },
-      pool: true,
-      maxConnections: 2,
-      maxMessages: 50
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
@@ -239,5 +222,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure server running on port " + PORT);
+  console.log("Server running on port " + PORT);
 });
