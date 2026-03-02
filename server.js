@@ -13,19 +13,19 @@ const PORT = 8080;
 
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
 
-const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
+const BATCH_SIZE = 5;
+const BATCH_DELAY = 300;
+const DAILY_LIMIT = 200;
 
-const BATCH_SIZE = 5;      // fixed speed
-const BATCH_DELAY = 300;   // 300ms
-const DAILY_LIMIT = 200;   // safe cap (adjust carefully)
+const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 
-/* ================= SECURITY ================= */
+/* ================= BASIC SECURITY ================= */
 
 app.disable("x-powered-by");
 
-app.use(express.json({ limit: "25kb" }));
-app.use(express.urlencoded({ extended: false, limit: "25kb" }));
+app.use(express.json({ limit: "30kb" }));
+app.use(express.urlencoded({ extended: false, limit: "30kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -46,6 +46,30 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  next();
+});
+
+/* ================= RATE LIMIT ================= */
+
+const requestMap = new Map();
+
+app.use((req, res, next) => {
+  const ip = req.ip;
+  const now = Date.now();
+
+  const record = requestMap.get(ip);
+
+  if (!record || now - record.start > 60000) {
+    requestMap.set(ip, { count: 1, start: now });
+    return next();
+  }
+
+  if (record.count > 120) {
+    return res.status(429).send("Too many requests");
+  }
+
+  record.count++;
   next();
 });
 
@@ -55,16 +79,18 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function cleanHeader(value = "", max = 120) {
-  return value.replace(/[\r\n]/g, "").trim().slice(0, max);
+function cleanHeader(str = "", max = 150) {
+  return str.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-function cleanBody(text = "", max = 10000) {
-  return text
+function preserveText(str = "", max = 15000) {
+  return str
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .slice(0, max);
 }
+
+/* ================= DAILY LIMIT ================= */
 
 const dailyTracker = new Map();
 
@@ -72,7 +98,7 @@ function checkDailyLimit(sender, count) {
   const now = Date.now();
   const record = dailyTracker.get(sender);
 
-  if (!record || now - record.start >= 86400000) {
+  if (!record || now - record.start > 86400000) {
     dailyTracker.set(sender, { count: 0, start: now });
   }
 
@@ -119,7 +145,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND ================= */
+/* ================= SEND MAIL ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -154,11 +180,11 @@ app.post("/send", requireAuth, async (req, res) => {
 
     await transporter.verify();
 
-    let sentCount = 0;
-
-    const finalSubject = cleanHeader(subject || "Message");
-    const finalText = cleanBody(message || "");
     const finalName = cleanHeader(senderName || email, 80);
+    const finalSubject = cleanHeader(subject || "Message");
+    const finalText = preserveText(message || "");
+
+    let sentCount = 0;
 
     for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
       const batch = recipientList.slice(i, i + BATCH_SIZE);
@@ -197,5 +223,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure server running on port " + PORT);
+  console.log("Secure mail server running on port " + PORT);
 });
