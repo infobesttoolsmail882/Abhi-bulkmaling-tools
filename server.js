@@ -14,18 +14,18 @@ const PORT = 8080;
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
 
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
-const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour auto logout
+const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
-const BATCH_SIZE = 5;      // sending speed fixed
-const BATCH_DELAY = 300;   // 300ms delay
-const DAILY_LIMIT = 500;   // safe daily cap (adjust carefully)
+const BATCH_SIZE = 5;      // fixed speed
+const BATCH_DELAY = 300;   // 300ms
+const DAILY_LIMIT = 200;   // safe cap (adjust carefully)
 
-/* ================= BASIC SECURITY ================= */
+/* ================= SECURITY ================= */
 
 app.disable("x-powered-by");
 
-app.use(express.json({ limit: "20kb" }));
-app.use(express.urlencoded({ extended: false, limit: "20kb" }));
+app.use(express.json({ limit: "25kb" }));
+app.use(express.urlencoded({ extended: false, limit: "25kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -59,8 +59,7 @@ function cleanHeader(value = "", max = 120) {
   return value.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-// Preserve EXACT line formatting
-function cleanBody(text = "", max = 8000) {
+function cleanBody(text = "", max = 10000) {
   return text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
@@ -120,18 +119,12 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND MAIL ================= */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const {
-      senderName,
-      email,
-      password,
-      recipients,
-      subject,
-      message
-    } = req.body || {};
+    const { senderName, email, password, recipients, subject, message } =
+      req.body || {};
 
     if (!email || !password || !recipients)
       return res.json({ success: false, message: "Missing fields" });
@@ -156,19 +149,16 @@ app.post("/send", requireAuth, async (req, res) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: {
-        user: email,
-        pass: password
-      }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
 
     let sentCount = 0;
 
-    const cleanSubject = cleanHeader(subject || "Message");
-    const cleanText = cleanBody(message || "");
-    const cleanName = cleanHeader(senderName || email, 80);
+    const finalSubject = cleanHeader(subject || "Message");
+    const finalText = cleanBody(message || "");
+    const finalName = cleanHeader(senderName || email, 80);
 
     for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
       const batch = recipientList.slice(i, i + BATCH_SIZE);
@@ -176,10 +166,10 @@ app.post("/send", requireAuth, async (req, res) => {
       const results = await Promise.allSettled(
         batch.map(to =>
           transporter.sendMail({
-            from: `"${cleanName}" <${email}>`,
+            from: `"${finalName}" <${email}>`,
             to,
-            subject: cleanSubject,
-            text: cleanText   // EXACT lines preserved
+            subject: finalSubject,
+            text: finalText
           })
         )
       );
@@ -188,7 +178,7 @@ app.post("/send", requireAuth, async (req, res) => {
         if (r.status === "fulfilled") sentCount++;
       });
 
-      await delay(BATCH_DELAY); // 300ms fixed
+      await delay(BATCH_DELAY);
     }
 
     return res.json({
