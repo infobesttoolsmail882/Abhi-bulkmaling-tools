@@ -12,19 +12,20 @@ const PORT = 8080;
 /* ================= CONFIG ================= */
 
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
+
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
+const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour auto logout
 
-const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
-const DAILY_LIMIT = 300; // realistic safe cap
+const BATCH_SIZE = 5;      // sending speed fixed
+const BATCH_DELAY = 300;   // 300ms delay
+const DAILY_LIMIT = 500;   // safe daily cap (adjust carefully)
 
-/* ================= BASIC SETUP ================= */
+/* ================= BASIC SECURITY ================= */
 
 app.disable("x-powered-by");
 
-app.use(express.json({ limit: "15kb" }));
-app.use(express.urlencoded({ extended: false, limit: "15kb" }));
+app.use(express.json({ limit: "20kb" }));
+app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -41,8 +42,6 @@ app.use(
   })
 );
 
-/* ================= SECURITY HEADERS ================= */
-
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -56,29 +55,29 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function sanitizeHeader(text = "", max = 120) {
-  return text.replace(/[\r\n]+/g, "").trim().slice(0, max);
+function cleanHeader(value = "", max = 120) {
+  return value.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-function sanitizeBody(text = "", max = 5000) {
-  // Preserve line breaks exactly
+// Preserve EXACT line formatting
+function cleanBody(text = "", max = 8000) {
   return text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .slice(0, max);
 }
 
-const dailyUsage = new Map();
+const dailyTracker = new Map();
 
 function checkDailyLimit(sender, count) {
   const now = Date.now();
-  const record = dailyUsage.get(sender);
+  const record = dailyTracker.get(sender);
 
-  if (!record || now - record.start > 86400000) {
-    dailyUsage.set(sender, { count: 0, start: now });
+  if (!record || now - record.start >= 86400000) {
+    dailyTracker.set(sender, { count: 0, start: now });
   }
 
-  const updated = dailyUsage.get(sender);
+  const updated = dailyTracker.get(sender);
 
   if (updated.count + count > DAILY_LIMIT) {
     return false;
@@ -107,7 +106,7 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({ success: false });
+  return res.json({ success: false, message: "Invalid login" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -125,7 +124,14 @@ app.post("/logout", (req, res) => {
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
-    const { email, password, recipients, subject, message } = req.body || {};
+    const {
+      senderName,
+      email,
+      password,
+      recipients,
+      subject,
+      message
+    } = req.body || {};
 
     if (!email || !password || !recipients)
       return res.json({ success: false, message: "Missing fields" });
@@ -150,15 +156,19 @@ app.post("/send", requireAuth, async (req, res) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: email, pass: password }
+      auth: {
+        user: email,
+        pass: password
+      }
     });
 
     await transporter.verify();
 
-    let sent = 0;
+    let sentCount = 0;
 
-    const cleanSubject = sanitizeHeader(subject || "Message");
-    const cleanBody = sanitizeBody(message || "");
+    const cleanSubject = cleanHeader(subject || "Message");
+    const cleanText = cleanBody(message || "");
+    const cleanName = cleanHeader(senderName || email, 80);
 
     for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
       const batch = recipientList.slice(i, i + BATCH_SIZE);
@@ -166,24 +176,24 @@ app.post("/send", requireAuth, async (req, res) => {
       const results = await Promise.allSettled(
         batch.map(to =>
           transporter.sendMail({
-            from: email,
+            from: `"${cleanName}" <${email}>`,
             to,
             subject: cleanSubject,
-            text: cleanBody // exact line format preserved
+            text: cleanText   // EXACT lines preserved
           })
         )
       );
 
       results.forEach(r => {
-        if (r.status === "fulfilled") sent++;
+        if (r.status === "fulfilled") sentCount++;
       });
 
-      await delay(BATCH_DELAY);
+      await delay(BATCH_DELAY); // 300ms fixed
     }
 
     return res.json({
       success: true,
-      message: `Send ${sent}`
+      message: `Send ${sentCount}`
     });
 
   } catch (err) {
