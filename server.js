@@ -14,11 +14,11 @@ const PORT = 8080;
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
 
 const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
-const DAILY_LIMIT = 200;
-
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
+
+const BATCH_SIZE = 5;     // fixed
+const BATCH_DELAY = 300;  // fixed
+const DAILY_LIMIT = 300;  // adjust safely
 
 /* ================= BASIC SECURITY ================= */
 
@@ -46,22 +46,20 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
 
-/* ================= RATE LIMIT ================= */
+/* ================= SIMPLE RATE LIMIT ================= */
 
-const requestMap = new Map();
+const ipMap = new Map();
 
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-
-  const record = requestMap.get(ip);
+  const record = ipMap.get(ip);
 
   if (!record || now - record.start > 60000) {
-    requestMap.set(ip, { count: 1, start: now });
+    ipMap.set(ip, { count: 1, start: now });
     return next();
   }
 
@@ -76,14 +74,13 @@ app.use((req, res, next) => {
 /* ================= HELPERS ================= */
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
-
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function cleanHeader(str = "", max = 150) {
   return str.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-function preserveText(str = "", max = 15000) {
+function preserveText(str = "", max = 20000) {
   return str
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
@@ -175,7 +172,10 @@ app.post("/send", requireAuth, async (req, res) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: email, pass: password }
+      auth: {
+        user: email,
+        pass: password
+      }
     });
 
     await transporter.verify();
