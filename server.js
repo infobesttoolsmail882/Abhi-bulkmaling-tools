@@ -12,19 +12,20 @@ const PORT = 8080;
 /* ================= CONFIG ================= */
 
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
-const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
+
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
+const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
-const BATCH_SIZE = 5;
-const BATCH_DELAY = 300;
-const DAILY_LIMIT = 300;
+const BATCH_SIZE = 5;      // fixed speed
+const BATCH_DELAY = 300;   // 300ms
+const DAILY_LIMIT = 200;   // safe cap (adjust carefully)
 
-/* ================= BASIC SECURITY ================= */
+/* ================= SECURITY ================= */
 
 app.disable("x-powered-by");
 
-app.use(express.json({ limit: "30kb" }));
-app.use(express.urlencoded({ extended: false, limit: "30kb" }));
+app.use(express.json({ limit: "25kb" }));
+app.use(express.urlencoded({ extended: false, limit: "25kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use(
@@ -48,63 +49,40 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ================= SIMPLE RATE LIMIT ================= */
-
-const ipRate = new Map();
-
-app.use((req, res, next) => {
-  const ip = req.ip;
-  const now = Date.now();
-  const record = ipRate.get(ip);
-
-  if (!record || now - record.start > 60000) {
-    ipRate.set(ip, { count: 1, start: now });
-    return next();
-  }
-
-  if (record.count > 120) {
-    return res.status(429).send("Too many requests");
-  }
-
-  record.count++;
-  next();
-});
-
 /* ================= HELPERS ================= */
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
+
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function cleanHeader(value = "", max = 150) {
+function cleanHeader(value = "", max = 120) {
   return value.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-function preserveText(value = "", max = 20000) {
-  return value
+function cleanBody(text = "", max = 10000) {
+  return text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .slice(0, max);
 }
 
-/* ================= DAILY LIMIT ================= */
-
 const dailyTracker = new Map();
 
-function checkDailyLimit(sender, amount) {
+function checkDailyLimit(sender, count) {
   const now = Date.now();
   const record = dailyTracker.get(sender);
 
-  if (!record || now - record.start > 86400000) {
+  if (!record || now - record.start >= 86400000) {
     dailyTracker.set(sender, { count: 0, start: now });
   }
 
   const updated = dailyTracker.get(sender);
 
-  if (updated.count + amount > DAILY_LIMIT) {
+  if (updated.count + count > DAILY_LIMIT) {
     return false;
   }
 
-  updated.count += amount;
+  updated.count += count;
   return true;
 }
 
@@ -127,7 +105,7 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({ success: false });
+  return res.json({ success: false, message: "Invalid login" });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -141,7 +119,7 @@ app.post("/logout", (req, res) => {
   });
 });
 
-/* ================= SEND MAIL ================= */
+/* ================= SEND ================= */
 
 app.post("/send", requireAuth, async (req, res) => {
   try {
@@ -176,11 +154,11 @@ app.post("/send", requireAuth, async (req, res) => {
 
     await transporter.verify();
 
-    const finalName = cleanHeader(senderName || email, 80);
-    const finalSubject = cleanHeader(subject || "Message");
-    const finalText = preserveText(message || "");
-
     let sentCount = 0;
+
+    const finalSubject = cleanHeader(subject || "Message");
+    const finalText = cleanBody(message || "");
+    const finalName = cleanHeader(senderName || email, 80);
 
     for (let i = 0; i < recipientList.length; i += BATCH_SIZE) {
       const batch = recipientList.slice(i, i + BATCH_SIZE);
@@ -219,5 +197,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Mail server running on port " + PORT);
+  console.log("Secure server running on port " + PORT);
 });
