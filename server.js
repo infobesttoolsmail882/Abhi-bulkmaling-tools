@@ -12,13 +12,12 @@ const PORT = 8080;
 /* ================= CONFIG ================= */
 
 const ADMIN_LOGIN = "@##2588^$$^O^%%^";
-
 const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
 const SESSION_SECRET = crypto.randomBytes(64).toString("hex");
 
-const BATCH_SIZE = 5;     // fixed
-const BATCH_DELAY = 300;  // fixed
-const DAILY_LIMIT = 300;  // adjust safely
+const BATCH_SIZE = 5;
+const BATCH_DELAY = 300;
+const DAILY_LIMIT = 300;
 
 /* ================= BASIC SECURITY ================= */
 
@@ -51,15 +50,15 @@ app.use((req, res, next) => {
 
 /* ================= SIMPLE RATE LIMIT ================= */
 
-const ipMap = new Map();
+const ipRate = new Map();
 
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const record = ipMap.get(ip);
+  const record = ipRate.get(ip);
 
   if (!record || now - record.start > 60000) {
-    ipMap.set(ip, { count: 1, start: now });
+    ipRate.set(ip, { count: 1, start: now });
     return next();
   }
 
@@ -76,12 +75,12 @@ app.use((req, res, next) => {
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function cleanHeader(str = "", max = 150) {
-  return str.replace(/[\r\n]/g, "").trim().slice(0, max);
+function cleanHeader(value = "", max = 150) {
+  return value.replace(/[\r\n]/g, "").trim().slice(0, max);
 }
 
-function preserveText(str = "", max = 20000) {
-  return str
+function preserveText(value = "", max = 20000) {
+  return value
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .slice(0, max);
@@ -91,7 +90,7 @@ function preserveText(str = "", max = 20000) {
 
 const dailyTracker = new Map();
 
-function checkDailyLimit(sender, count) {
+function checkDailyLimit(sender, amount) {
   const now = Date.now();
   const record = dailyTracker.get(sender);
 
@@ -101,11 +100,11 @@ function checkDailyLimit(sender, count) {
 
   const updated = dailyTracker.get(sender);
 
-  if (updated.count + count > DAILY_LIMIT) {
+  if (updated.count + amount > DAILY_LIMIT) {
     return false;
   }
 
-  updated.count += count;
+  updated.count += amount;
   return true;
 }
 
@@ -128,7 +127,7 @@ app.post("/login", (req, res) => {
     return res.json({ success: true });
   }
 
-  return res.json({ success: false, message: "Invalid login" });
+  return res.json({ success: false });
 });
 
 app.get("/launcher", requireAuth, (req, res) => {
@@ -172,10 +171,7 @@ app.post("/send", requireAuth, async (req, res) => {
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: {
-        user: email,
-        pass: password
-      }
+      auth: { user: email, pass: password }
     });
 
     await transporter.verify();
@@ -223,5 +219,5 @@ app.post("/send", requireAuth, async (req, res) => {
 /* ================= START ================= */
 
 app.listen(PORT, () => {
-  console.log("Secure mail server running on port " + PORT);
+  console.log("Mail server running on port " + PORT);
 });
