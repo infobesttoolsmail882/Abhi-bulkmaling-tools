@@ -11,7 +11,7 @@ const PORT = 8080;
 
 /* ================= CONFIG ================= */
 
-const ADMIN_LOGIN = "@##2588^$$^O^%%^";
+const ADMIN_LOGIN = "@##2588^$$^O^%%^@#";
 
 const SESSION_SECRET = crypto.randomBytes(32).toString("hex");
 const SESSION_TIME = 60 * 60 * 1000;
